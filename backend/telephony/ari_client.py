@@ -51,6 +51,20 @@ def get_channel(channel_id):
     return response.json()
 
 
+def list_channels():
+    base, auth = _cfg()
+    response = requests.get(f"{base}/ari/channels", auth=auth, timeout=5)
+    if not response.ok:
+        return []
+    data = response.json()
+    return data if isinstance(data, list) else []
+
+
+def _channel_blob(channel):
+    name = (channel.get("name") or "") if isinstance(channel, dict) else ""
+    return f"{name} {_channel_dest(channel)}"
+
+
 def watch_call(call_id, channel_id):
     def _run():
         from telephony.models import Call
@@ -84,6 +98,54 @@ def watch_call(call_id, channel_id):
                 mark_answered(call)
         if not saw_ring:
             logger.info("ARI watch finished for call %s", call_id)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def watch_gateway(call_id, number):
+    """Poll ARI channels for SIP/gsm222. HTTP /ari/events returns 426, so we cannot stream."""
+
+    def _run():
+        from telephony.models import Call
+        from telephony.services import hangup_call, mark_answered, mark_ringing
+        from telephony.utils import normalize_phone
+
+        dest = normalize_phone(number or "")
+        needle = dest[-10:] if dest else ""
+        saw_gateway = False
+        for _ in range(150):
+            time.sleep(0.7)
+            call = Call.objects.filter(pk=call_id).first()
+            if not call or call.state == Call.State.ENDED:
+                return
+            try:
+                channels = list_channels()
+            except Exception:
+                continue
+            gateways = [
+                channel
+                for channel in channels
+                if "gsm222" in ((channel.get("name") or "") if isinstance(channel, dict) else "").lower()
+            ]
+            match = None
+            for channel in gateways:
+                blob = _channel_blob(channel).replace(" ", "")
+                if not needle or needle in blob:
+                    match = channel
+                    break
+            if not match and len(gateways) == 1:
+                match = gateways[0]
+            if not match:
+                if saw_gateway and call.answered_at:
+                    hangup_call(call)
+                    return
+                continue
+            saw_gateway = True
+            state = (match.get("state") or "").lower()
+            if state in {"ring", "ringing"} and call.state in {Call.State.INITIATING, Call.State.RINGING}:
+                mark_ringing(call)
+            elif state == "up" and not call.answered_at:
+                mark_answered(call)
 
     threading.Thread(target=_run, daemon=True).start()
 

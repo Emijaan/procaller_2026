@@ -6,6 +6,17 @@ export interface Organization {
   name: string;
   product_name: string;
   timezone: string;
+  is_active?: boolean;
+  subscription_status?: string;
+  max_managers?: number;
+  max_admins?: number;
+  max_users?: number;
+  managers?: number;
+  admins?: number;
+  users?: number;
+  managers_used?: number;
+  admins_used?: number;
+  users_used?: number;
 }
 
 export interface User {
@@ -14,22 +25,36 @@ export interface User {
   first_name: string;
   last_name: string;
   display_name: string;
-  role: 'admin' | 'supervisor' | 'agent';
+  role: 'super_admin' | 'agency' | 'manager' | 'admin' | 'user' | 'supervisor' | 'agent' | string;
+  role_normalized?: string;
   team: string;
   extension: string;
   presence: Presence;
   avatar_initials: string;
   organization: Organization | null;
+  reports_to?: number | null;
+  reports_to_name?: string;
+  permissions?: string[];
+  max_admins?: number;
+  max_users?: number;
+  is_active?: boolean;
 }
 
 export interface Campaign {
   id: number;
   name: string;
+  description?: string;
   status: string;
   dial_method: string;
   caller_id: string;
   caller_id_name: string;
   active: boolean;
+  agency_name?: string;
+  manager_name?: string;
+  admin_name?: string;
+  lead_count?: number;
+  assigned_users?: number[];
+  assigned_count?: number;
 }
 
 export interface Contact {
@@ -48,6 +73,10 @@ export interface Contact {
   comments: string;
   last_disposition: string;
   last_contact_at: string | null;
+  lead_status?: string;
+  extra_data?: Record<string, string>;
+  next_callback_at?: string | null;
+  call_count?: number;
 }
 
 export interface CallRecord {

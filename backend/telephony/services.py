@@ -80,6 +80,10 @@ def originate_manual(user, phone_number, contact=None, campaign=None, session=No
 
     if not client_dial:
         get_telephony().originate(call)
+    else:
+        from telephony.ari_client import watch_gateway
+
+        watch_gateway(call.id, number)
     broadcast_call(call, "call.started")
     return call
 
@@ -149,20 +153,39 @@ def set_call_flag(call, muted=None, on_hold=None):
     return call
 
 
+LEAD_STATUS_FROM_DISPOSITION = {
+    "interested": "interested",
+    "callback requested": "callback",
+    "callback": "callback",
+    "not interested": "not_interested",
+    "no answer": "no_answer",
+    "voicemail": "no_answer",
+    "wrong number": "wrong_number",
+    "busy": "busy",
+    "converted": "completed",
+}
+
+
 def save_disposition(call, disposition, notes="", follow_up_at=None, follow_up_reason=""):
     call.disposition = disposition
     if notes:
         call.notes = notes
     call.save(update_fields=["disposition", "notes"])
     if call.contact_id:
-        call.contact.last_disposition = disposition
-        call.contact.last_contact_at = timezone.now()
+        contact = call.contact
+        contact.last_disposition = disposition
+        contact.last_contact_at = timezone.now()
+        contact.call_count = (contact.call_count or 0) + 1
+        contact.lead_status = LEAD_STATUS_FROM_DISPOSITION.get((disposition or "").strip().lower(), contact.lead_status)
         if notes:
-            call.contact.comments = notes
-        call.contact.save(update_fields=["last_disposition", "last_contact_at", "comments"])
+            contact.comments = notes
+        if follow_up_at:
+            contact.next_callback_at = follow_up_at
+            contact.lead_status = Contact.LeadStatus.CALLBACK
+        contact.save()
         if follow_up_at:
             FollowUp.objects.create(
-                contact=call.contact,
+                contact=contact,
                 agent=call.agent,
                 reason=follow_up_reason or notes or disposition,
                 due_at=follow_up_at,

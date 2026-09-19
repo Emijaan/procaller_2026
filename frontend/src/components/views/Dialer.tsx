@@ -138,6 +138,24 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     }
   }, []);
 
+  const loadNextLead = useCallback(async () => {
+    try {
+      const qs = campaignId ? `?campaign=${campaignId}` : '';
+      const lead = await api<Contact>(`/api/leads/next/${qs}`);
+      setCurrentContact(lead);
+      setDialNumber(lead.phone || '');
+      return lead;
+    } catch (err) {
+      setCurrentContact(emptyContact());
+      showToast(err instanceof Error ? err.message : 'No leads available', 'info');
+      return null;
+    }
+  }, [campaignId, showToast]);
+
+  useEffect(() => {
+    if (mode === 'preview') loadNextLead();
+  }, [mode, campaignId, loadNextLead]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -176,11 +194,14 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     if (call.state === 'initiating' || call.state === 'ringing' || call.state === 'connected' || call.state === 'on_hold' || call.state === 'ended') {
       setCallState(call.state);
     }
+    if (call.state === 'connected' || call.state === 'on_hold') {
+      phone.stopRingtone();
+    }
     setMuted(call.muted);
     setOnHold(call.on_hold);
     setRecording(call.recording);
     if (call.notes) setNote(call.notes);
-  }, []);
+  }, [phone]);
 
   useAgentSocket((payload) => {
     if (payload?.call) applyCall(payload.call);
@@ -208,6 +229,16 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       setShowDisposition(true);
     }
   }, phoneReady);
+
+  useEffect(() => {
+    if (callState !== 'initiating' && callState !== 'ringing') return;
+    const tick = window.setInterval(() => {
+      api<{ call: CallRecord | null }>('/api/calls/active/').then((data) => {
+        if (data.call) applyCall(data.call);
+      }).catch(() => undefined);
+    }, 800);
+    return () => window.clearInterval(tick);
+  }, [callState, applyCall]);
 
   const startCall = async (overrideNumber?: string) => {
     const number = sanitizeDial(overrideNumber ?? (mode === 'manual' ? dialNumber : currentContact.phone));
@@ -357,8 +388,12 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     setFollowUpDate('');
     setFollowUpTime('');
     setDtmf('');
-    const idx = contacts.findIndex((c) => c.id === currentContact.id);
-    if (idx >= 0 && contacts[idx + 1]) setCurrentContact(contacts[idx + 1]);
+    if (mode === 'preview') {
+      await loadNextLead();
+    } else {
+      const idx = contacts.findIndex((c) => c.id === currentContact.id);
+      if (idx >= 0 && contacts[idx + 1]) setCurrentContact(contacts[idx + 1]);
+    }
   };
 
   const toggleMute = async () => {
@@ -494,7 +529,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
           <div className="p-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-500">Lead Status</span>
-              <Badge variant="success">{currentContact.status || 'New'}</Badge>
+              <Badge variant="success">{(currentContact.lead_status || currentContact.status || 'New').replace(/_/g, ' ')}</Badge>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-500">Lead Score</span>
@@ -510,6 +545,17 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
                 <div className="flex flex-wrap gap-1">
                   {currentContact.tags.map((tag) => <Badge key={tag} variant="default">{tag}</Badge>)}
                 </div>
+              </div>
+            )}
+            {currentContact.extra_data && Object.keys(currentContact.extra_data).length > 0 && (
+              <div className="pt-2 border-t border-[#E2E8F0] space-y-1.5">
+                <p className="text-xs text-slate-500 mb-1">Lead details</p>
+                {Object.entries(currentContact.extra_data).slice(0, 8).map(([key, value]) => (
+                  <div key={key} className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] uppercase tracking-wide text-slate-400">{key}</span>
+                    <span className="text-xs text-slate-700 text-right">{String(value)}</span>
+                  </div>
+                ))}
               </div>
             )}
             {currentContact.comments && (
@@ -593,10 +639,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
                   </button>
                   {mode !== 'manual' && (
                     <button
-                      onClick={() => {
-                        const idx = contacts.findIndex((c) => c.id === currentContact.id);
-                        setCurrentContact(contacts[idx + 1] || contacts[0] || emptyContact());
-                      }}
+                      onClick={() => { loadNextLead(); }}
                       className="h-12 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium text-sm transition-all"
                     >
                       Skip →
@@ -622,9 +665,9 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
                 </div>
               </div>
               <h2 className="text-2xl font-bold text-slate-900 mb-1">{displayName}</h2>
-              <p className="text-slate-500 mb-1">{displayPhone}</p>
+              <p className="text-slate-500 mb-1 font-mono tracking-wide">{displayPhone}</p>
               <p className="text-lg font-medium text-[#4F46E5] animate-calling">
-                {callState === 'initiating' ? 'Connecting...' : 'Ringing...'}
+                {callState === 'initiating' ? 'Calling...' : 'Ringing...'}
               </p>
               <button onClick={endCall} className="mt-8 w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center mx-auto shadow-lg shadow-red-200 transition-all">
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -635,62 +678,52 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
           )}
 
           {(callState === 'connected' || callState === 'on_hold') && (
-            <div className="w-full max-w-md">
-              <div className="text-center mb-6">
-                <div className="relative inline-flex mb-4">
-                  <div className="w-20 h-20 rounded-full bg-green-500 flex items-center justify-center shadow-lg shadow-green-200">
-                    <Avatar initials={initials} size="lg" />
-                  </div>
-                </div>
-                <h2 className="text-xl font-bold text-slate-900">{displayName}</h2>
-                <p className="text-sm text-slate-500">{displayPhone}{currentContact.company ? ` · ${currentContact.company}` : ''}</p>
-                <div className="flex items-center justify-center gap-2 mt-2">
-                  {onHold ? <Badge variant="warning">On Hold</Badge> : <Badge variant="success" dot>Connected</Badge>}
-                  {recording && <Badge variant="danger" dot>Recording</Badge>}
-                </div>
-                <p className="font-mono text-3xl font-bold text-slate-900 mt-3 tabular-nums">{timer}</p>
+            <div className="w-full max-w-sm text-center">
+              <div className="w-24 h-24 rounded-full bg-green-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-green-200">
+                <Avatar initials={initials} size="lg" />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-900">{displayName}</h2>
+              <p className="text-sm text-slate-500 font-mono tracking-wide mt-1">{displayPhone}</p>
+              <p className="font-mono text-4xl font-bold text-slate-900 mt-4 tabular-nums tracking-wider">{timer}</p>
+              <p className="text-xs font-medium mt-1">{onHold ? <span className="text-amber-600">On hold</span> : <span className="text-green-600">Connected</span>}</p>
+
+              <div className="grid grid-cols-3 gap-4 mt-8 mb-6 max-w-xs mx-auto">
+                {[
+                  { label: muted ? 'Unmute' : 'Mute', icon: muted ? '🔊' : '🔇', active: muted, action: toggleMute },
+                  { label: 'Keypad', icon: '⌨', active: showKeypad, action: () => setShowKeypad(!showKeypad) },
+                  { label: onHold ? 'Resume' : 'Hold', icon: onHold ? '▶' : '⏸', active: onHold, action: toggleHold },
+                ].map((ctrl) => (
+                  <button key={ctrl.label} onClick={ctrl.action} className="flex flex-col items-center gap-2">
+                    <span className={`w-14 h-14 rounded-full flex items-center justify-center text-xl transition-all ${ctrl.active ? 'bg-[#4F46E5] text-white' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}>{ctrl.icon}</span>
+                    <span className="text-[11px] font-medium text-slate-500">{ctrl.label}</span>
+                  </button>
+                ))}
               </div>
 
-              <Card className="p-4">
-                <div className="grid grid-cols-4 gap-3 mb-4">
-                  {[
-                    { label: muted ? 'Unmute' : 'Mute', icon: muted ? '🔊' : '🔇', active: muted, action: toggleMute },
-                    { label: onHold ? 'Resume' : 'Hold', icon: onHold ? '▶' : '⏸', active: onHold, action: toggleHold },
-                    { label: 'Keypad', icon: '⌨', active: showKeypad, action: () => setShowKeypad(!showKeypad) },
-                    { label: recording ? 'Stop Rec' : 'Record', icon: '⏺', active: recording, action: () => { setRecording(!recording); showToast(recording ? 'Recording flag cleared' : 'Recording flagged', 'info'); } },
-                  ].map((ctrl) => (
-                    <button key={ctrl.label} onClick={ctrl.action} className={`flex flex-col items-center gap-1.5 p-3 rounded-xl transition-all ${ctrl.active ? 'bg-[#EEF2FF] text-[#4F46E5]' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'}`}>
-                      <span className="text-xl">{ctrl.icon}</span>
-                      <span className="text-[10px] font-medium">{ctrl.label}</span>
-                    </button>
-                  ))}
-                </div>
-
-                {showKeypad && (
-                  <div className="mb-4 p-3 bg-slate-50 rounded-xl">
-                    <p className="font-mono text-center text-sm text-slate-600 mb-2 min-h-[20px]">{dtmf}</p>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {keypadKeys.map((key) => (
-                        <button key={key} onClick={() => pressKey(key)} className="h-9 rounded-lg bg-white border border-[#E2E8F0] hover:bg-slate-100 text-sm font-medium transition-all">{key}</button>
-                      ))}
-                    </div>
+              {showKeypad && (
+                <div className="mb-6 p-3 bg-white rounded-2xl border border-[#E2E8F0] max-w-xs mx-auto">
+                  <p className="font-mono text-center text-sm text-slate-600 mb-2 min-h-[20px]">{dtmf}</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {keypadKeys.map((key) => (
+                      <button key={key} onClick={() => pressKey(key)} className="h-12 rounded-full bg-slate-100 hover:bg-slate-200 text-lg font-semibold text-slate-800 transition-all">{key}</button>
+                    ))}
                   </div>
-                )}
-
-                <textarea
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  placeholder="Add a note during the call..."
-                  className="w-full text-sm rounded-xl border border-[#E2E8F0] p-3 resize-none h-20 focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30 focus:border-[#4F46E5] mb-3"
-                />
-
-                <div className="flex gap-2">
-                  <Button variant="outline" size="md" className="flex-1" onClick={() => showToast('Transfer arrives with inbound features', 'info')}>Transfer</Button>
-                  <button onClick={endCall} className="flex-1 h-9 rounded-lg bg-red-500 hover:bg-red-600 text-white font-semibold transition-all flex items-center justify-center gap-2 shadow-sm">
-                    End Call
-                  </button>
                 </div>
-              </Card>
+              )}
+
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Add a note..."
+                className="w-full text-sm rounded-xl border border-[#E2E8F0] p-3 resize-none h-16 focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30 mb-5"
+              />
+
+              <button onClick={endCall} className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center mx-auto shadow-lg shadow-red-200 transition-all">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
+                </svg>
+              </button>
+              <p className="text-[11px] text-slate-400 mt-2">End call</p>
             </div>
           )}
         </div>
@@ -707,6 +740,16 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
               <p>Agent: <span className="font-medium text-slate-800">{user?.display_name}</span></p>
             </div>
           </div>
+          {currentContact.extra_data && Object.keys(currentContact.extra_data).length > 0 && (
+            <div className="p-4 border-t border-[#E2E8F0]">
+              <h4 className="text-xs font-semibold text-slate-500 mb-2">Imported fields</h4>
+              <div className="space-y-1.5">
+                {Object.entries(currentContact.extra_data).map(([key, value]) => (
+                  <p key={key} className="text-xs text-slate-600"><span className="text-slate-400">{key}:</span> {String(value)}</p>
+                ))}
+              </div>
+            </div>
+          )}
           {currentContact.comments && (
             <div className="p-4 border-t border-[#E2E8F0]">
               <h4 className="text-xs font-semibold text-slate-500 mb-2">Notes</h4>

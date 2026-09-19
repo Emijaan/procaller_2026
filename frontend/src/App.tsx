@@ -13,7 +13,7 @@ import LiveOps from './components/views/LiveOps';
 import Team from './components/views/Team';
 import Recordings from './components/views/Recordings';
 import FollowUps from './components/views/FollowUps';
-import Settings from './components/views/Settings';
+import Agencies from './components/views/Agencies';
 import { CallQueue, IVR, Integrations, Reports } from './components/views/OtherViews';
 import { ToastContainer, useToast } from './components/ui/index';
 import { useAuth } from './context/AuthContext';
@@ -150,6 +150,7 @@ export default function App() {
 
   const renderView = () => {
     switch (view) {
+      case 'agencies': return <Agencies showToast={showToast} />;
       case 'dashboard': return <Dashboard onNavigate={navigate} />;
       case 'dialer': return <Dialer showToast={showToast} />;
       case 'contacts': return <Contacts showToast={showToast} onCall={(phone) => { sessionStorage.setItem('procaller.pendingDial', phone); navigate('dialer'); }} />;

@@ -1,12 +1,22 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { Card, StatCard, Badge, Avatar, AgentStatusBadge, ProgressBar, Button } from '../ui/index';
-import { kpiData, hourlyCallData, dispositionData, agents, campaigns, followUps } from '../../data/mock';
+import { hourlyCallData, dispositionData, agents, campaigns, followUps, kpiData } from '../../data/mock';
+import { api } from '../../api/client';
+import { useAuth } from '../../context/AuthContext';
+import { roleLabel } from '../../api/access';
 
 const periods = ['Today', '7 Days', '30 Days', '90 Days'];
 
 export default function Dashboard({ onNavigate }: { onNavigate: (v: string) => void }) {
+  const { user } = useAuth();
   const [period, setPeriod] = useState('Today');
+  const [stats, setStats] = useState<any>(null);
+  useEffect(() => {
+    api('/api/dashboard/').then(setStats).catch(() => undefined);
+  }, []);
+  const greeting = user?.first_name || user?.display_name || 'there';
+  const usage = stats?.usage;
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#F8FAFC] fade-in">
@@ -15,8 +25,8 @@ export default function Dashboard({ onNavigate }: { onNavigate: (v: string) => v
         {/* Header */}
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">Good morning, Aman 👋</h2>
-            <p className="text-sm text-slate-500 mt-0.5">Here's what's happening across your organization today.</p>
+            <h2 className="text-2xl font-bold text-slate-900">Good morning, {greeting}</h2>
+            <p className="text-sm text-slate-500 mt-0.5">{roleLabel(user?.role_normalized || user?.role)} dashboard · live tenant counts.</p>
           </div>
           <div className="flex items-center gap-1.5 bg-white border border-[#E2E8F0] rounded-lg p-1">
             {periods.map(p => (
@@ -57,15 +67,15 @@ export default function Dashboard({ onNavigate }: { onNavigate: (v: string) => v
 
         {/* KPI Grid */}
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-          <StatCard label="Total Calls" value={kpiData.totalCalls.value.toLocaleString()} trend={kpiData.totalCalls.trend} period={kpiData.totalCalls.period}
+          <StatCard label="Total Calls" value={(stats?.calls ?? 0).toLocaleString()}
             icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>} />
-          <StatCard label="Connected" value={kpiData.connected.value.toLocaleString()} trend={kpiData.connected.trend} period={kpiData.connected.period}
+          <StatCard label="Connected" value={(stats?.connected_calls ?? 0).toLocaleString()}
             icon={<svg className="w-5 h-5 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>} color="text-green-500" />
-          <StatCard label="Answer Rate" value={kpiData.answerRate.value} trend={kpiData.answerRate.trend} period={kpiData.answerRate.period}
+          <StatCard label="Leads" value={stats?.leads ?? 0}
             icon={<svg className="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>} color="text-blue-500" />
-          <StatCard label="Active Agents" value={kpiData.activeAgents.value} period={kpiData.activeAgents.period}
+          <StatCard label="Users" value={usage ? `${usage.users}/${usage.max_users}` : (stats?.users ?? 0)}
             icon={<svg className="w-5 h-5 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>} color="text-purple-500" />
-          <StatCard label="Conversion Rate" value={kpiData.conversionRate.value} trend={kpiData.conversionRate.trend} period={kpiData.conversionRate.period}
+          <StatCard label="Campaigns" value={stats?.campaigns ?? 0}
             icon={<svg className="w-5 h-5 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>} color="text-amber-500" />
         </div>
 

@@ -1,6 +1,17 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Card, Badge, Button, Avatar } from '../ui/index';
-import { auditLogs, phoneNumbers } from '../../data/mock';
+import { phoneNumbers } from '../../data/mock';
+import { api } from '../../api/client';
+
+type AuditRow = {
+  id: number;
+  user_name?: string;
+  action: string;
+  object_type?: string;
+  object_id?: string;
+  created_at?: string;
+  ip_address?: string | null;
+};
 
 const settingsNav = [
   { id: 'general', label: 'General', icon: '⚙️' },
@@ -16,6 +27,11 @@ const settingsNav = [
 
 export default function Settings({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
   const [section, setSection] = useState('general');
+  const [auditLogs, setAuditLogs] = useState<AuditRow[]>([]);
+  useEffect(() => {
+    if (section !== 'audit') return;
+    api<AuditRow[]>('/api/audit-logs/').then(setAuditLogs).catch((err) => showToast(err.message, 'error'));
+  }, [section]);
 
   return (
     <div className="flex-1 overflow-hidden flex bg-[#F8FAFC] fade-in">
@@ -222,20 +238,20 @@ export default function Settings({ showToast }: { showToast: (msg: string, type?
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#F1F5F9]">
-                    {auditLogs.map(log => (
+                    {auditLogs.map((log) => (
                       <tr key={log.id} className="hover:bg-slate-50 transition-colors">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            <Avatar initials={log.user.split(' ').map(w => w[0]).join('').slice(0, 2) || 'UN'} size="sm" />
-                            <span className="text-sm font-medium text-slate-700">{log.user}</span>
+                            <Avatar initials={(log.user_name || 'UN').split(' ').map((w) => w[0]).join('').slice(0, 2) || 'UN'} size="sm" />
+                            <span className="text-sm font-medium text-slate-700">{log.user_name || 'System'}</span>
                           </div>
                         </td>
                         <td className="px-3 py-3 text-slate-600">{log.action}</td>
-                        <td className="px-3 py-3 text-xs text-slate-500">{log.resource}</td>
-                        <td className="px-3 py-3 text-xs text-slate-400 font-mono">{log.date}</td>
-                        <td className="px-3 py-3 text-xs font-mono text-slate-400">{log.ip}</td>
+                        <td className="px-3 py-3 text-xs text-slate-500">{[log.object_type, log.object_id].filter(Boolean).join(' #') || '—'}</td>
+                        <td className="px-3 py-3 text-xs text-slate-400 font-mono">{(log.created_at || '').replace('T', ' ').slice(0, 19)}</td>
+                        <td className="px-3 py-3 text-xs font-mono text-slate-400">{log.ip_address || '—'}</td>
                         <td className="px-3 py-3">
-                          <Badge variant={log.status === 'Success' ? 'success' : 'danger'}>{log.status}</Badge>
+                          <Badge variant="success">Success</Badge>
                         </td>
                       </tr>
                     ))}

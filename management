@@ -1,0 +1,1093 @@
+I am building a production-ready multi-tenant Broker / Calling Management Software.
+
+Build the system with a clean, scalable architecture. The system must support hierarchical users, strict tenant isolation, role-based permissions, campaign management, Excel lead importing, manual calling, and Preview Auto Dialing.
+
+1. USER HIERARCHY
+
+The system must have the following hierarchy:
+
+SUPER ADMIN
+↓
+AGENCY
+↓
+MANAGER
+↓
+ADMIN
+↓
+USER
+
+Super Admin
+
+Super Admin is the platform owner.
+
+Super Admin must be able to:
+
+- Create agencies
+- Edit agencies
+- Activate/deactivate agencies
+- Delete agencies where appropriate
+- View all agencies
+- View agency statistics
+- Set limits for each agency
+- Manage agency subscription/status
+- View all managers, admins, users, campaigns and calling activity
+- Have permission to make manual calls
+- Have complete system access
+
+When creating an agency, Super Admin must be able to configure limits such as:
+
+- Maximum Managers
+- Maximum Admins
+- Maximum Users
+
+Example:
+
+Agency: ABC Finance
+
+Manager Limit: 10
+Admin Limit: 30
+User Limit: 300
+
+The system must enforce these limits at backend level.
+
+Example:
+
+Managers: 10/10
+Admins: 28/30
+Users: 287/300
+
+If an agency reaches its limit, it must not be able to create additional accounts until the limit is increased.
+
+---
+
+2. AGENCY
+
+Each agency is a separate tenant.
+
+Agency data must be completely isolated from other agencies.
+
+Agency must be able to manage resources only within its own tenant.
+
+Agency should be able to:
+
+- View its managers
+- Create/manage managers within the allocated limit
+- View admins
+- View users
+- View campaigns
+- View calling activity according to permissions
+- View usage statistics
+
+Agency must never be able to access another agency's data.
+
+---
+
+3. MANAGER
+
+A Manager belongs to one Agency.
+
+Manager must be able to create/manage Admins and Users under their own hierarchy according to the limits and permissions assigned to them.
+
+Example:
+
+Manager: Amit
+
+Admin Limit: 5
+User Limit: 50
+
+Dashboard should show:
+
+Admins: 5/5
+Users: 43/50
+
+Manager must be able to:
+
+- Create Admins
+- Edit Admins
+- Activate/deactivate Admins
+- Create Users
+- Edit Users
+- Activate/deactivate Users
+- Assign users/admins according to permissions
+- View relevant campaigns
+- View relevant call activity
+- Make manual calls
+
+Manager must never access data belonging to another manager/agency unless explicitly permitted.
+
+---
+
+4. ADMIN
+
+Admin belongs to a Manager and therefore to an Agency.
+
+Admin should primarily manage calling campaigns and leads.
+
+Admin must be able to:
+
+- Create campaigns
+- Edit campaigns
+- Activate/deactivate campaigns
+- Upload Excel files
+- Import leads
+- View imported leads
+- Manage leads
+- Assign leads/campaigns to users
+- Configure calling strategy
+- View calling reports
+- View call logs
+- Export data if permission is granted
+- Make manual calls
+- Start/manage Preview Auto Dial campaigns
+
+Admin can create unlimited campaigns unless a separate campaign limit is configured.
+
+Example:
+
+Admin
+├── Campaign A
+├── Campaign B
+├── Campaign C
+└── Campaign D
+
+---
+
+5. USER
+
+User is the calling agent.
+
+User must be able to:
+
+- Login
+- View assigned campaigns/leads
+- Make manual calls if permission is enabled
+- Use Preview Auto Dial
+- View customer/lead information
+- Enter call disposition
+- Add notes
+- Schedule callback
+- View relevant call history
+- End/save calls properly
+
+Users must only see the campaigns/leads assigned to them.
+
+---
+
+6. ROLE-BASED PERMISSION SYSTEM
+
+Do not hard-code all permissions only by role.
+
+Create a proper RBAC permission system so permissions can be enabled/disabled.
+
+Example permissions:
+
+- create_agency
+- manage_agency
+- create_manager
+- manage_manager
+- create_admin
+- manage_admin
+- create_user
+- manage_user
+- create_campaign
+- edit_campaign
+- delete_campaign
+- import_leads
+- export_leads
+- assign_leads
+- manual_call
+- preview_auto_dial
+- view_call_logs
+- view_reports
+- manage_dispositions
+- manage_calling_settings
+
+A user can have role-based permissions plus additional permissions where required.
+
+---
+
+7. CALLING STRATEGIES
+
+Initially implement two calling strategies:
+
+A. MANUAL CALL
+
+Manual calling must allow an authorized user to manually select/dial a phone number.
+
+The following roles can potentially have manual calling permission:
+
+- Super Admin
+- Manager
+- Admin
+- User
+
+Actual access must depend on the permission system.
+
+Manual call flow:
+
+Lead
+↓
+View customer information
+↓
+Click CALL
+↓
+Call initiated
+↓
+Conversation
+↓
+Call ends
+↓
+Select disposition
+↓
+Add notes
+↓
+Save call result
+
+---
+
+8. PREVIEW AUTO DIAL
+
+Implement Preview Auto Dial mode.
+
+This is NOT predictive dialing initially.
+
+The system should first show the next lead/customer information to the agent.
+
+Example:
+
+Next Lead
+
+Name: Rahul Kumar
+Mobile: 98XXXXXXXX
+Loan Amount: ₹85,000
+City: Delhi
+Product: Personal Loan
+Due Date: 25-09-2026
+
+Buttons:
+
+[CALL]
+
+After the call ends:
+
+[Disposition]
+[Notes]
+[SAVE & NEXT]
+
+After saving the result, the next lead should be presented automatically.
+
+The auto-dial engine must respect:
+
+- User assignment
+- Campaign status
+- Lead status
+- Calling permissions
+- Call availability
+- Callback schedules
+- Duplicate prevention
+- Do-not-call/block status if implemented
+- Concurrent call restrictions
+
+Keep the architecture extensible so future strategies can be added:
+
+- Manual
+- Preview
+- Progressive
+- Power Dialer
+- Predictive Dialer
+
+---
+
+9. CAMPAIGN MANAGEMENT
+
+Admin must be able to create multiple campaigns.
+
+Campaign fields should include at minimum:
+
+- Campaign Name
+- Description
+- Status
+- Calling Strategy
+- Created By
+- Agency
+- Manager
+- Admin
+- Created At
+- Updated At
+
+Example:
+
+Campaign Name:
+September Collection
+
+Calling Mode:
+Preview Auto Dial
+
+Status:
+Active
+
+Total Leads:
+25,000
+
+Assigned Users:
+20
+
+Campaign statuses:
+
+- Draft
+- Active
+- Paused
+- Completed
+- Archived
+
+Campaigns must belong to a specific tenant/agency.
+
+---
+
+10. EXCEL IMPORT SYSTEM
+
+Admin must be able to upload Excel files such as:
+
+Name | Mobile | Loan Amount | City | Product | Due Date
+
+The MOBILE column is mandatory.
+
+The system must validate the uploaded Excel file before importing.
+
+Requirements:
+
+- Accept Excel files
+- Detect column headers
+- Mobile column must exist
+- Reject files without Mobile column
+- Show import preview before final import
+- Show total rows
+- Show valid rows
+- Show invalid rows
+- Detect duplicate mobile numbers
+- Allow configurable duplicate handling
+- Validate phone number format
+- Import all additional columns dynamically
+- Store original imported values
+- Display all imported columns inside the campaign
+- Show import progress
+- Show import result/report
+
+Example:
+
+Mobile
+Name
+Loan Amount
+Address
+State
+Product
+EMI
+Due Date
+Customer ID
+
+Only Mobile is mandatory.
+
+All other columns are dynamic.
+
+---
+
+11. DYNAMIC LEAD DATA
+
+Do NOT create a fixed database column for every possible Excel field.
+
+Different campaigns can have completely different Excel columns.
+
+Use PostgreSQL JSONB or another scalable dynamic-field architecture.
+
+Example:
+
+Lead:
+
+mobile = "9876543210"
+
+data:
+
+{
+"name": "Rahul Kumar",
+"loan_amount": "85000",
+"city": "Delhi",
+"product": "Personal Loan",
+"due_date": "2026-09-25"
+}
+
+The database should support arbitrary additional Excel columns without requiring database migrations for every new Excel file.
+
+However, important searchable/indexable fields such as:
+
+- mobile
+- campaign_id
+- agency_id
+- status
+- assigned_user_id
+- created_at
+
+should remain proper database columns.
+
+---
+
+12. LEAD MODEL
+
+Each lead should contain at minimum:
+
+- ID
+- Agency/Tenant ID
+- Campaign ID
+- Mobile Number
+- Dynamic Data JSON/JSONB
+- Lead Status
+- Assigned User
+- Assigned Admin/Team if required
+- Created At
+- Updated At
+- Last Called At
+- Next Callback At
+- Call Count
+
+Lead statuses can include:
+
+- New
+- Assigned
+- Calling
+- Connected
+- Not Connected
+- Busy
+- No Answer
+- Wrong Number
+- Interested
+- Not Interested
+- Callback
+- Promise To Pay
+- Paid
+- Completed
+- DNC/Blocked
+
+Make the disposition/status system configurable.
+
+---
+
+13. CALL LOG
+
+Every call must create a call log.
+
+CallLog should contain:
+
+- ID
+- Agency ID
+- Campaign ID
+- Lead ID
+- Agent/User ID
+- Phone Number
+- Call Type
+- Call Start Time
+- Answer Time
+- End Time
+- Duration
+- Call Status
+- Disposition
+- Notes
+- Recording URL/path if available
+- Created At
+
+Call types:
+
+- MANUAL
+- PREVIEW_AUTO
+
+Design the architecture so future call types can be added.
+
+---
+
+14. DISPOSITION SYSTEM
+
+After every completed call, the agent must be able to select a disposition.
+
+Initial dispositions:
+
+- Connected
+- Not Connected
+- Busy
+- No Answer
+- Wrong Number
+- Interested
+- Not Interested
+- Callback
+- Promise To Pay
+- Paid
+
+If Callback is selected, show:
+
+Callback Date
+Callback Time
+Callback Notes
+
+The system should automatically make the lead eligible for calling again at the scheduled callback time.
+
+---
+
+15. MULTI-TENANT SECURITY
+
+This is extremely important.
+
+The application must be strictly multi-tenant.
+
+Every major entity must have tenant ownership.
+
+Conceptually:
+
+Agency
+↓
+Manager
+↓
+Admin
+↓
+Campaign
+↓
+Lead
+↓
+CallLog
+
+Agency A must NEVER be able to access:
+
+- Agency B users
+- Agency B admins
+- Agency B managers
+- Agency B campaigns
+- Agency B leads
+- Agency B call logs
+
+Do not rely only on frontend filtering.
+
+Tenant isolation must be enforced at backend/API/database query level.
+
+Every API endpoint must verify:
+
+1. Authentication
+2. User role
+3. Permission
+4. Agency/tenant ownership
+5. Object-level access
+
+Prevent IDOR/insecure direct object reference vulnerabilities.
+
+---
+
+16. DATABASE STRUCTURE
+
+Use a scalable relational architecture.
+
+Recommended core entities:
+
+- User
+- Role
+- Permission
+- Agency
+- AgencyLimits
+- ManagerProfile
+- AdminProfile
+- Campaign
+- Lead
+- LeadAssignment
+- CallLog
+- Disposition
+- Callback
+- ImportJob
+- ImportError
+- CallingSettings
+- AuditLog
+
+Use PostgreSQL.
+
+For dynamic lead columns, use JSONB.
+
+Add appropriate indexes, especially for:
+
+- agency_id
+- campaign_id
+- mobile
+- assigned_user_id
+- status
+- next_callback_at
+- created_at
+
+Use database constraints wherever possible.
+
+---
+
+17. AGENCY LIMIT ENFORCEMENT
+
+Limits must be enforced transactionally at backend level.
+
+Example:
+
+Agency limits:
+
+Managers = 10
+Admins = 30
+Users = 300
+
+When creating a Manager:
+
+1. Check agency limit
+2. Count active/created managers according to configured rule
+3. Reject creation if limit is reached
+4. Perform creation safely inside a transaction
+
+Do the same for Admin and User creation.
+
+Do not depend on frontend counters.
+
+---
+
+18. DASHBOARDS
+
+Create dashboards appropriate to each role.
+
+Super Admin Dashboard
+
+Show:
+
+- Total Agencies
+- Active Agencies
+- Total Managers
+- Total Admins
+- Total Users
+- Total Campaigns
+- Total Leads
+- Total Calls
+- Agency usage
+- System activity
+
+Agency Dashboard
+
+Show:
+
+- Managers
+- Admins
+- Users
+- Campaigns
+- Leads
+- Calls
+- Resource usage
+- Limits
+
+Manager Dashboard
+
+Show:
+
+- Admins
+- Users
+- Campaigns
+- Leads
+- Calls
+- User performance
+- Callback statistics
+
+Admin Dashboard
+
+Show:
+
+- Campaigns
+- Total Leads
+- Assigned Leads
+- Pending Leads
+- Calls
+- Connected Calls
+- Callbacks
+- Campaign performance
+
+User Dashboard
+
+Show:
+
+- Assigned Leads
+- Pending Calls
+- Today's Calls
+- Connected Calls
+- Callbacks
+- Dispositions
+- Current campaign
+
+---
+
+19. AUDIT LOG
+
+Implement an AuditLog system.
+
+Track important actions such as:
+
+- Login
+- Logout
+- Agency creation
+- Manager creation
+- Admin creation
+- User creation
+- Campaign creation
+- Campaign update
+- Excel import
+- Lead assignment
+- Lead deletion
+- Permission changes
+- Calling activity
+- Status changes
+
+Store:
+
+- User
+- Agency
+- Action
+- Object type
+- Object ID
+- Timestamp
+- IP address where appropriate
+- Metadata
+
+---
+
+20. API DESIGN
+
+Build REST APIs with clean separation.
+
+Example endpoints:
+
+POST   /api/auth/login/
+POST   /api/auth/logout/
+
+GET    /api/agencies/
+POST   /api/agencies/
+GET    /api/agencies/{id}/
+PATCH  /api/agencies/{id}/
+
+GET    /api/managers/
+POST   /api/managers/
+
+GET    /api/admins/
+POST   /api/admins/
+
+GET    /api/users/
+POST   /api/users/
+
+GET    /api/campaigns/
+POST   /api/campaigns/
+GET    /api/campaigns/{id}/
+PATCH  /api/campaigns/{id}/
+
+POST   /api/campaigns/{id}/import/
+GET    /api/campaigns/{id}/leads/
+
+GET    /api/leads/
+GET    /api/leads/{id}/
+PATCH  /api/leads/{id}/
+
+POST   /api/calls/manual/
+POST   /api/calls/preview/
+POST   /api/calls/{id}/complete/
+
+GET    /api/call-logs/
+GET    /api/reports/
+
+Design the API according to the actual backend framework and follow REST/security best practices.
+
+---
+
+21. FRONTEND
+
+Build a modern responsive dashboard.
+
+Use:
+
+- Login page
+- Role-specific dashboard
+- Sidebar navigation
+- Tables
+- Filters
+- Search
+- Pagination
+- Modal forms
+- Import wizard
+- Campaign management
+- Lead management
+- Calling interface
+- Reports
+- User management
+- Permission management
+
+The UI must dynamically hide/show features based on permissions.
+
+However, hiding a button is NOT a security mechanism. Backend authorization must always be enforced.
+
+---
+
+22. EXCEL IMPORT UI
+
+Create a proper import wizard:
+
+STEP 1:
+Upload Excel
+
+STEP 2:
+Read headers
+
+STEP 3:
+Validate mandatory Mobile column
+
+STEP 4:
+Show column mapping
+
+Example:
+
+Excel Column → Database Field
+
+Mobile → Mobile
+Name → Dynamic Field
+Loan Amount → Dynamic Field
+City → Dynamic Field
+
+STEP 5:
+Preview records
+
+STEP 6:
+Validate
+
+STEP 7:
+Import
+
+STEP 8:
+Show result
+
+Example:
+
+Total Rows: 10,000
+Valid: 9,850
+Duplicate: 100
+Invalid: 50
+Imported: 9,850
+
+Allow downloading an error report for rejected rows.
+
+---
+
+23. PERFORMANCE
+
+The system must be designed for large campaigns.
+
+Do not import thousands/millions of Excel rows synchronously inside a normal HTTP request.
+
+Use background processing for large imports.
+
+Implement:
+
+- Background import jobs
+- Chunk/batch processing
+- Database bulk inserts
+- Proper indexes
+- Pagination
+- Query optimization
+- Transaction management
+
+The architecture should be capable of scaling to large numbers of campaigns, leads and users.
+
+---
+
+24. SECURITY REQUIREMENTS
+
+Implement:
+
+- Secure authentication
+- Password hashing
+- JWT/session security as appropriate
+- Role-based authorization
+- Object-level authorization
+- Tenant isolation
+- CSRF protection where applicable
+- Rate limiting
+- Input validation
+- File upload validation
+- Excel file size limits
+- Allowed file extensions
+- Protection against malicious uploads
+- SQL injection protection
+- XSS protection
+- Audit logging
+- Secure secrets management
+
+Never trust IDs supplied by the frontend.
+
+---
+
+25. FUTURE CALLING INTEGRATION
+
+Keep the calling layer modular.
+
+The application should have a calling service/interface so it can later connect with:
+
+- Asterisk
+- SIP
+- WebRTC
+- GSM Gateway
+- SIP Trunk
+- Other telephony providers
+
+Do not tightly couple campaign logic directly with the telephony implementation.
+
+Example architecture:
+
+Frontend
+↓
+Django REST API
+↓
+Calling Service
+↓
+Telephony Provider / Asterisk / SIP
+↓
+Customer
+
+This will allow the calling provider to be changed later without rewriting campaign and lead management.
+
+---
+
+26. IMPORTANT BUSINESS RULE
+
+The hierarchy must always be respected.
+
+Example:
+
+Super Admin
+can manage all agencies
+
+Agency A
+can manage only Agency A
+
+Manager A
+can manage only resources under Manager A
+
+Admin A
+can manage only resources/campaigns assigned to Admin A
+
+User A
+can access only resources assigned to User A
+
+No user should be able to bypass this hierarchy by changing IDs in API requests.
+
+---
+
+27. DEVELOPMENT APPROACH
+
+Do not build everything as one huge file.
+
+Use a modular architecture.
+
+Separate:
+
+- Authentication
+- Users
+- Agencies
+- Roles & Permissions
+- Campaigns
+- Leads
+- Excel Imports
+- Calling
+- Call Logs
+- Reports
+- Audit Logs
+
+Follow clean code and maintainable project structure.
+
+Use proper:
+
+- Models
+- Serializers
+- Views/ViewSets
+- Services
+- Permissions
+- Validators
+- Tasks/background jobs
+- Utilities
+
+Add automated tests for critical business rules.
+
+---
+
+28. TESTING REQUIREMENTS
+
+Create tests for:
+
+Authentication
+
+- Login
+- Logout
+- Invalid credentials
+
+Tenant isolation
+
+- Agency A cannot access Agency B
+- Manager cannot access another manager's data
+- Admin cannot access another admin's restricted data
+- User cannot access unauthorized campaigns
+
+Limits
+
+- Agency manager limit
+- Agency admin limit
+- Agency user limit
+- Manager admin limit
+- Manager user limit
+
+Excel
+
+- Missing Mobile column
+- Duplicate mobile
+- Invalid mobile
+- Dynamic columns
+- Large import
+- Invalid file
+
+Calling
+
+- Manual call
+- Preview call
+- Call completion
+- Disposition
+- Callback
+
+Permissions
+
+- Authorized action
+- Unauthorized action
+- Direct API access attempt
+
+---
+
+29. EXPECTED OUTPUT
+
+Before writing large amounts of code, first provide:
+
+1. Complete system architecture
+2. Database ERD/schema
+3. Django app/module structure
+4. API endpoint structure
+5. RBAC/permission design
+6. Multi-tenant security design
+7. Excel import architecture
+8. Calling architecture
+9. Frontend page structure
+10. Implementation plan in phases
+
+Then implement the project phase-by-phase.
+
+Do not skip security or tenant isolation.
+
+The final application should be production-ready, scalable, secure, maintainable, and prepared for future Asterisk/SIP/WebRTC integration.
+
+IMPORTANT:
+Do not use Docker unless explicitly requested.
+
+Use PostgreSQL as the database.
+
+If a technology/framework decision is required, explain the decision briefly before implementation.
+
+Do not make assumptions about business rules that are not specified. Identify them as configurable settings instead.

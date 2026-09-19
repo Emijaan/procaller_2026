@@ -1,5 +1,6 @@
 import React from 'react';
 import type { User } from '../../api/types';
+import { can, roleLabel } from '../../api/access';
 import { useAuth } from '../../context/AuthContext';
 
 type NavView = string;
@@ -97,7 +98,18 @@ export default function Sidebar({ active, onNavigate, collapsed, onToggle, user 
 
       {/* Scrollable nav */}
       <div className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
-        {navItems.map(item => <NavLink key={item.id} item={item} />)}
+        {navItems.filter((item) => {
+          if (item.id === 'dialer') return can(user, 'manual_call') || can(user, 'preview_auto_dial');
+          if (item.id === 'campaigns') return can(user, 'create_campaign') || can(user, 'edit_campaign') || can(user, 'preview_auto_dial');
+          if (item.id === 'team') return can(user, 'manage_user') || can(user, 'manage_manager') || can(user, 'manage_admin');
+          if (item.id === 'analytics' || item.id === 'reports') return can(user, 'view_reports');
+          if (item.id === 'call_history') return can(user, 'view_call_logs');
+          return true;
+        }).map(item => <NavLink key={item.id} item={item} />)}
+
+        {can(user, 'manage_agency') && (
+          <NavLink item={{ id: 'agencies', label: 'Agencies', icon: <Icon path="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /> }} />
+        )}
 
         {!collapsed && (
           <div className="pt-4 pb-1">
@@ -125,7 +137,7 @@ export default function Sidebar({ active, onNavigate, collapsed, onToggle, user 
           {!collapsed && (
             <div className="min-w-0">
               <p className="text-sm font-medium text-white truncate">{user?.display_name || 'Agent'}</p>
-              <p className="text-xs text-[#64748B] truncate capitalize">{user?.role || 'agent'}</p>
+              <p className="text-xs text-[#64748B] truncate">{roleLabel(user?.role_normalized || user?.role)}</p>
             </div>
           )}
         </div>

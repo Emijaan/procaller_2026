@@ -23,14 +23,20 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         org, _ = Organization.objects.get_or_create(
             name="AP Infotech and Cyber Solution",
-            defaults={"product_name": "ProCaller", "timezone": "Asia/Kolkata"},
+            defaults={
+                "product_name": "ProCaller",
+                "timezone": "Asia/Kolkata",
+                "max_managers": 10,
+                "max_admins": 30,
+                "max_users": 300,
+            },
         )
         admin, created = User.objects.get_or_create(
             email="admin@apinfotech.com",
             defaults={
                 "first_name": "Aman",
                 "last_name": "Kumar",
-                "role": User.Role.ADMIN,
+                "role": User.Role.SUPER_ADMIN,
                 "team": "Leadership",
                 "extension": "2100",
                 "sip_username": "2100",
@@ -44,55 +50,130 @@ class Command(BaseCommand):
         if created:
             admin.set_password("ProCaller@2026")
             admin.save()
+        else:
+            admin.role = User.Role.SUPER_ADMIN
+            admin.is_superuser = True
+            admin.organization = org
+            admin.save(update_fields=["role", "is_superuser", "organization"])
+
+        agency_user, created = User.objects.get_or_create(
+            email="agency@apinfotech.com",
+            defaults={
+                "first_name": "AP",
+                "last_name": "Infotech",
+                "role": User.Role.AGENCY,
+                "team": "Agency",
+                "organization": org,
+                "avatar_initials": "AI",
+            },
+        )
+        if created:
+            agency_user.set_password("ProCaller@2026")
+            agency_user.save()
+
+        manager, created = User.objects.get_or_create(
+            email="manager@apinfotech.com",
+            defaults={
+                "first_name": "Amit",
+                "last_name": "Verma",
+                "role": User.Role.MANAGER,
+                "team": "Collections",
+                "organization": org,
+                "reports_to": agency_user,
+                "max_admins": 5,
+                "max_users": 50,
+                "avatar_initials": "AV",
+            },
+        )
+        if created:
+            manager.set_password("ProCaller@2026")
+            manager.save()
+
+        camp_admin, created = User.objects.get_or_create(
+            email="campaign.admin@apinfotech.com",
+            defaults={
+                "first_name": "Neha",
+                "last_name": "Joshi",
+                "role": User.Role.ADMIN,
+                "team": "Collections",
+                "organization": org,
+                "reports_to": manager,
+                "avatar_initials": "NJ",
+            },
+        )
+        if created:
+            camp_admin.set_password("ProCaller@2026")
+            camp_admin.save()
 
         agent, created = User.objects.get_or_create(
             email="agent@apinfotech.com",
             defaults={
                 "first_name": "Rahul",
                 "last_name": "Sharma",
-                "role": User.Role.AGENT,
+                "role": User.Role.USER,
                 "team": "Sales Alpha",
                 "extension": "2101",
                 "sip_username": "2101",
                 "sip_password": "2101",
                 "avatar_initials": "RS",
                 "organization": org,
+                "reports_to": camp_admin,
             },
         )
         if created:
             agent.set_password("ProCaller@2026")
             agent.save()
+        else:
+            agent.role = User.Role.USER
+            agent.organization = org
+            agent.reports_to = camp_admin
+            agent.save(update_fields=["role", "organization", "reports_to"])
 
         agent2, created = User.objects.get_or_create(
             email="agent2@apinfotech.com",
             defaults={
                 "first_name": "Priya",
                 "last_name": "Singh",
-                "role": User.Role.AGENT,
+                "role": User.Role.USER,
                 "team": "Sales Alpha",
                 "extension": "2102",
                 "sip_username": "2102",
                 "sip_password": "2102",
                 "avatar_initials": "PS",
                 "organization": org,
+                "reports_to": camp_admin,
             },
         )
         if created:
             agent2.set_password("ProCaller@2026")
             agent2.save()
+        else:
+            agent2.role = User.Role.USER
+            agent2.organization = org
+            agent2.reports_to = camp_admin
+            agent2.save(update_fields=["role", "organization", "reports_to"])
 
         campaign, _ = Campaign.objects.get_or_create(
             name="Manual Outbound",
             defaults={
-                "status": Campaign.Status.RUNNING,
+                "status": Campaign.Status.ACTIVE,
                 "dial_method": Campaign.DialMethod.MANUAL,
                 "caller_id": "0000000000",
                 "caller_id_name": "ProCaller",
+                "agency": org,
+                "manager": manager,
+                "admin": camp_admin,
+                "created_by": camp_admin,
             },
         )
+        campaign.agency = org
+        campaign.manager = manager
+        campaign.admin = camp_admin
+        campaign.save()
+        campaign.assigned_users.set([agent, agent2])
 
         for name, phone, email, company, tags, score in DEMO_CONTACTS:
-            Contact.objects.get_or_create(
+            contact, created = Contact.objects.get_or_create(
                 phone=phone,
                 defaults={
                     "name": name,
@@ -102,12 +183,25 @@ class Command(BaseCommand):
                     "lead_score": score,
                     "owner": agent,
                     "campaign": campaign,
+                    "agency": org,
+                    "lead_status": Contact.LeadStatus.ASSIGNED,
+                    "extra_data": {"product": "Personal Loan", "city": "Delhi"},
                     "comments": "Imported for ProCaller manual-calling launch.",
                     "status": Contact.Status.INACTIVE if name == "Sunita Desai" else Contact.Status.ACTIVE,
                 },
             )
+            if not created:
+                contact.agency = org
+                contact.campaign = campaign
+                contact.owner = agent
+                contact.lead_status = contact.lead_status or Contact.LeadStatus.ASSIGNED
+                if not contact.extra_data:
+                    contact.extra_data = {"product": "Personal Loan", "city": "Delhi"}
+                contact.save()
 
-        self.stdout.write(self.style.SUCCESS("Seeded ProCaller demo data."))
-        self.stdout.write("Admin  admin@apinfotech.com / ProCaller@2026  ext 1000")
-        self.stdout.write("Agent  agent@apinfotech.com / ProCaller@2026  ext 1001")
-        self.stdout.write("Agent2 agent2@apinfotech.com / ProCaller@2026  ext 1002")
+        self.stdout.write(self.style.SUCCESS("Seeded ProCaller hierarchy demo data."))
+        self.stdout.write("Super Admin  admin@apinfotech.com / ProCaller@2026")
+        self.stdout.write("Agency       agency@apinfotech.com / ProCaller@2026")
+        self.stdout.write("Manager      manager@apinfotech.com / ProCaller@2026")
+        self.stdout.write("Admin        campaign.admin@apinfotech.com / ProCaller@2026")
+        self.stdout.write("User         agent@apinfotech.com / ProCaller@2026  ext 2101")

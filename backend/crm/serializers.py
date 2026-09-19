@@ -25,6 +25,12 @@ class ContactSerializer(serializers.ModelSerializer):
             "comments",
             "last_disposition",
             "last_contact_at",
+            "lead_status",
+            "extra_data",
+            "agency",
+            "next_callback_at",
+            "call_count",
+            "dnc",
         )
 
 
