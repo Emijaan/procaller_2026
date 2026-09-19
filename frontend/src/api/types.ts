@@ -55,6 +55,8 @@ export interface Campaign {
   lead_count?: number;
   assigned_users?: number[];
   assigned_count?: number;
+  has_hold_audio?: boolean;
+  hold_audio_name?: string;
 }
 
 export interface Contact {

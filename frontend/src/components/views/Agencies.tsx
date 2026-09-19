@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../api/client';
 import type { Organization } from '../../api/types';
+import { can } from '../../api/access';
+import { useAuth } from '../../context/AuthContext';
 import { Badge, Button, Card, Input, Modal, StatCard } from '../ui/index';
 
 export default function Agencies({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+  const { user } = useAuth();
   const [rows, setRows] = useState<Organization[]>([]);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({ name: '', email: '', max_managers: '10', max_admins: '30', max_users: '300' });
@@ -40,7 +43,7 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
             <h2 className="text-xl font-bold text-slate-900">Agencies</h2>
             <p className="text-sm text-slate-500">Tenant limits are enforced on the server.</p>
           </div>
-          <Button variant="primary" onClick={() => setOpen(true)}>+ New Agency</Button>
+          {can(user, 'create_agency') && <Button variant="primary" onClick={() => setOpen(true)}>+ New Agency</Button>}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard label="Agencies" value={rows.length} />

@@ -2,9 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { Avatar, Badge, Button, SearchInput, Input, Modal, Select } from '../ui/index';
 import { api } from '../../api/client';
 import type { User } from '../../api/types';
-import { roleLabel } from '../../api/access';
+import { can, roleLabel } from '../../api/access';
+import { useAuth } from '../../context/AuthContext';
 
 export default function Team({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+  const { user } = useAuth();
   const [rows, setRows] = useState<User[]>([]);
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
@@ -35,7 +37,9 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
           <SearchInput placeholder="Search team..." value={search} onChange={setSearch} />
         </div>
         <div className="ml-auto flex gap-2">
-          <Button variant="primary" size="sm" onClick={() => setOpen(true)}>+ Add account</Button>
+          {(can(user, 'create_user') || can(user, 'create_admin') || can(user, 'create_manager')) && (
+            <Button variant="primary" size="sm" onClick={() => setOpen(true)}>+ Add account</Button>
+          )}
         </div>
       </div>
       <div className="bg-white border-b border-[#E2E8F0] px-6 py-3 flex items-center gap-6 shrink-0">
@@ -91,9 +95,9 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
             <Input label="Last name" value={form.last_name} onChange={(e) => setForm({ ...form, last_name: e.target.value })} />
           </div>
           <Select label="Role" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} options={[
-            { value: 'manager', label: 'Manager' },
-            { value: 'admin', label: 'Admin' },
-            { value: 'user', label: 'User' },
+            ...(can(user, 'create_manager') ? [{ value: 'manager', label: 'Manager' }] : []),
+            ...(can(user, 'create_admin') ? [{ value: 'admin', label: 'Admin' }] : []),
+            ...(can(user, 'create_user') ? [{ value: 'user', label: 'User' }] : []),
           ]} />
           <Input label="Password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
           <div className="flex justify-end gap-2">

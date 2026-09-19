@@ -103,7 +103,9 @@ export default function Sidebar({ active, onNavigate, collapsed, onToggle, user 
           if (item.id === 'campaigns') return can(user, 'create_campaign') || can(user, 'edit_campaign') || can(user, 'preview_auto_dial');
           if (item.id === 'team') return can(user, 'manage_user') || can(user, 'manage_manager') || can(user, 'manage_admin');
           if (item.id === 'analytics' || item.id === 'reports') return can(user, 'view_reports');
-          if (item.id === 'call_history') return can(user, 'view_call_logs');
+          if (item.id === 'call_history' || item.id === 'recordings') return can(user, 'view_call_logs');
+          if (item.id === 'live_ops') return can(user, 'view_reports') || can(user, 'manage_user');
+          if (item.id === 'call_queue') return can(user, 'manage_calling_settings');
           return true;
         }).map(item => <NavLink key={item.id} item={item} />)}
 
@@ -117,7 +119,13 @@ export default function Sidebar({ active, onNavigate, collapsed, onToggle, user 
           </div>
         )}
         {collapsed && <div className="my-3 border-t border-white/5" />}
-        {adminItems.map(item => <NavLink key={item.id} item={item} />)}
+        {adminItems.filter((item) => {
+          if (item.id === 'audit_logs') return can(user, 'view_audit_logs');
+          if (['billing', 'security', 'phone_numbers', 'ivr', 'integrations'].includes(item.id)) {
+            return can(user, 'manage_calling_settings') || can(user, 'manage_agency');
+          }
+          return true;
+        }).map(item => <NavLink key={item.id} item={item} />)}
       </div>
 
       {/* Bottom: user + collapse */}

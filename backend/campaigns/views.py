@@ -78,6 +78,53 @@ class CampaignDetailView(APIView):
         return Response(CampaignSerializer(camp).data)
 
 
+def _is_mp3(upload):
+    name = (upload.name or "").lower()
+    content = (getattr(upload, "content_type", "") or "").lower()
+    return name.endswith(".mp3") or content in {"audio/mpeg", "audio/mp3", "audio/mpeg3"}
+
+
+class CampaignHoldAudioView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        camp = _scope(request).filter(pk=pk).first()
+        if not camp or not camp.hold_audio:
+            return Response({"detail": "No hold audio uploaded for this campaign"}, status=404)
+        from django.http import FileResponse
+
+        return FileResponse(camp.hold_audio.open("rb"), as_attachment=False, filename="hold.mp3", content_type="audio/mpeg")
+
+    def post(self, request, pk):
+        require_perm(request.user, "edit_campaign")
+        camp = _scope(request).filter(pk=pk).first()
+        if not camp:
+            return Response({"detail": "Not found"}, status=404)
+        upload = request.FILES.get("file")
+        if not upload:
+            return Response({"detail": "Upload an MP3 file"}, status=400)
+        if upload.size and upload.size > 5 * 1024 * 1024:
+            return Response({"detail": "Hold audio must be 5MB or smaller"}, status=400)
+        if not _is_mp3(upload):
+            return Response({"detail": "Only MP3 files are allowed"}, status=400)
+        if camp.hold_audio:
+            camp.hold_audio.delete(save=False)
+        camp.hold_audio = upload
+        camp.save(update_fields=["hold_audio", "updated_at"])
+        write_audit(request.user, "hold_audio_upload", "campaign", camp.id, request)
+        return Response(CampaignSerializer(camp).data)
+
+    def delete(self, request, pk):
+        require_perm(request.user, "edit_campaign")
+        camp = _scope(request).filter(pk=pk).first()
+        if not camp:
+            return Response({"detail": "Not found"}, status=404)
+        if camp.hold_audio:
+            camp.hold_audio.delete(save=True)
+        write_audit(request.user, "hold_audio_delete", "campaign", camp.id, request)
+        return Response(CampaignSerializer(camp).data)
+
+
 def _digits(value):
     return re.sub(r"\D+", "", str(value or ""))
 

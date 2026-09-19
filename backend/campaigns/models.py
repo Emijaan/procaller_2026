@@ -1,5 +1,11 @@
+import uuid
+
 from django.conf import settings
 from django.db import models
+
+
+def hold_audio_upload_to(instance, filename):
+    return f"hold_audio/{instance.id or 'new'}/{uuid.uuid4().hex}.mp3"
 
 
 class Campaign(models.Model):
@@ -41,6 +47,7 @@ class Campaign(models.Model):
     assigned_users = models.ManyToManyField(
         settings.AUTH_USER_MODEL, blank=True, related_name="assigned_campaigns"
     )
+    hold_audio = models.FileField(upload_to=hold_audio_upload_to, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -45,9 +45,9 @@ class CallListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = Call.objects.select_related("agent", "contact", "campaign").filter(agent=request.user)
-        if request.user.role in ("admin", "supervisor"):
-            qs = Call.objects.select_related("agent", "contact", "campaign").all()
+        from accounts.access import scoped_calls
+
+        qs = scoped_calls(request.user, Call.objects.select_related("agent", "contact", "campaign"))
         q = request.query_params.get("q")
         if q:
             qs = qs.filter(phone_number__icontains=q) | qs.filter(contact__name__icontains=q)

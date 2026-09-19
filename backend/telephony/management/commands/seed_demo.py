@@ -70,6 +70,11 @@ class Command(BaseCommand):
         if created:
             agency_user.set_password("ProCaller@2026")
             agency_user.save()
+        else:
+            agency_user.role = User.Role.AGENCY
+            agency_user.is_superuser = False
+            agency_user.organization = org
+            agency_user.save(update_fields=["role", "is_superuser", "organization"])
 
         manager, created = User.objects.get_or_create(
             email="manager@apinfotech.com",
@@ -88,6 +93,12 @@ class Command(BaseCommand):
         if created:
             manager.set_password("ProCaller@2026")
             manager.save()
+        else:
+            manager.role = User.Role.MANAGER
+            manager.is_superuser = False
+            manager.organization = org
+            manager.reports_to = agency_user
+            manager.save(update_fields=["role", "is_superuser", "organization", "reports_to"])
 
         camp_admin, created = User.objects.get_or_create(
             email="campaign.admin@apinfotech.com",
@@ -104,6 +115,12 @@ class Command(BaseCommand):
         if created:
             camp_admin.set_password("ProCaller@2026")
             camp_admin.save()
+        else:
+            camp_admin.role = User.Role.ADMIN
+            camp_admin.is_superuser = False
+            camp_admin.organization = org
+            camp_admin.reports_to = manager
+            camp_admin.save(update_fields=["role", "is_superuser", "organization", "reports_to"])
 
         agent, created = User.objects.get_or_create(
             email="agent@apinfotech.com",
@@ -125,9 +142,10 @@ class Command(BaseCommand):
             agent.save()
         else:
             agent.role = User.Role.USER
+            agent.is_superuser = False
             agent.organization = org
             agent.reports_to = camp_admin
-            agent.save(update_fields=["role", "organization", "reports_to"])
+            agent.save(update_fields=["role", "is_superuser", "organization", "reports_to"])
 
         agent2, created = User.objects.get_or_create(
             email="agent2@apinfotech.com",
@@ -149,9 +167,10 @@ class Command(BaseCommand):
             agent2.save()
         else:
             agent2.role = User.Role.USER
+            agent2.is_superuser = False
             agent2.organization = org
             agent2.reports_to = camp_admin
-            agent2.save(update_fields=["role", "organization", "reports_to"])
+            agent2.save(update_fields=["role", "is_superuser", "organization", "reports_to"])
 
         campaign, _ = Campaign.objects.get_or_create(
             name="Manual Outbound",

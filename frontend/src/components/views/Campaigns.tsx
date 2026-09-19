@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Card, Badge, Button, ProgressBar, Modal } from '../ui/index';
 import { api } from '../../api/client';
 import type { Campaign, User } from '../../api/types';
+import { can } from '../../api/access';
+import { useAuth } from '../../context/AuthContext';
 
 const statusVariant = (s: string): 'success' | 'warning' | 'danger' | 'muted' | 'info' | 'default' | 'purple' => {
   const m: Record<string, 'success' | 'warning' | 'danger' | 'muted' | 'info' | 'default' | 'purple'> = {
@@ -28,6 +30,7 @@ type Preview = {
 } | null;
 
 export default function Campaigns({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+  const { user } = useAuth();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [agents, setAgents] = useState<User[]>([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -47,6 +50,33 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
     load();
     api<User[]>('/api/staff/?role=user').then(setAgents).catch(() => undefined);
   }, []);
+
+  const uploadHold = async (id: number, file: File) => {
+    if (!file.name.toLowerCase().endsWith('.mp3')) {
+      showToast('Hold audio must be an MP3', 'error');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('Hold audio must be 5MB or smaller', 'error');
+      return;
+    }
+    const token = localStorage.getItem('procaller.access') || '';
+    const body = new FormData();
+    body.append('file', file);
+    try {
+      await fetch(`/api/campaigns/${id}/hold-audio/`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body,
+      }).then(async (r) => {
+        if (!r.ok) throw new Error((await r.json()).detail || 'Upload failed');
+      });
+      showToast('Hold audio saved for this campaign', 'success');
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Upload failed', 'error');
+    }
+  };
 
   const resetWizard = () => {
     setShowCreate(false);
@@ -145,7 +175,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               </button>
             ))}
           </div>
-          <Button variant="primary" size="md" onClick={() => setShowCreate(true)}>+ New Campaign</Button>
+          {can(user, 'create_campaign') && <Button variant="primary" size="md" onClick={() => setShowCreate(true)}>+ New Campaign</Button>}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -182,17 +212,34 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                 ))}
               </div>
               <div className="flex items-center gap-2 mt-4 pt-3 border-t border-[#E2E8F0]">
-                {camp.status === 'running' || camp.status === 'active' ? (
+                {can(user, 'edit_campaign') && (camp.status === 'running' || camp.status === 'active') && (
                   <Button variant="secondary" size="sm" className="flex-1" onClick={() => setStatus(camp, 'paused')}>⏸ Pause</Button>
-                ) : camp.status === 'paused' ? (
-                  <Button variant="primary" size="sm" className="flex-1" onClick={() => setStatus(camp, 'active')}>▶ Resume</Button>
-                ) : camp.status === 'draft' ? (
-                  <Button variant="primary" size="sm" className="flex-1" onClick={() => setStatus(camp, 'active')}>🚀 Launch</Button>
-                ) : (
-                  <Button variant="secondary" size="sm" className="flex-1">View Report</Button>
                 )}
-                <Button variant="outline" size="sm">Analytics</Button>
+                {can(user, 'edit_campaign') && camp.status === 'paused' && (
+                  <Button variant="primary" size="sm" className="flex-1" onClick={() => setStatus(camp, 'active')}>▶ Resume</Button>
+                )}
+                {can(user, 'edit_campaign') && camp.status === 'draft' && (
+                  <Button variant="primary" size="sm" className="flex-1" onClick={() => setStatus(camp, 'active')}>🚀 Launch</Button>
+                )}
+                {can(user, 'edit_campaign') && (
+                  <label className="h-8 px-3 inline-flex items-center rounded-lg border border-[#E2E8F0] text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">
+                    🎵 Hold MP3
+                    <input
+                      type="file"
+                      accept="audio/mpeg,.mp3"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (file) uploadHold(camp.id, file);
+                      }}
+                    />
+                  </label>
+                )}
               </div>
+              <p className="text-[10px] text-slate-400 mt-2">
+                Hold audio: {camp.has_hold_audio ? (camp.hold_audio_name || 'Uploaded MP3') : 'Default tone · MP3 up to 5MB'}
+              </p>
             </Card>
           ))}
         </div>

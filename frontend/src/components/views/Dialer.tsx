@@ -220,6 +220,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     if (payload?.type === 'call.ended') {
       endingRef.current = true;
       phone.stopRingtone();
+      phone.stopHoldMusic().catch(() => undefined);
       phone.stopLoopback();
       phone.hangupCall();
       setCallState('ended');
@@ -342,6 +343,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     const id = callIdRef.current;
     endingRef.current = true;
     phone.stopRingtone();
+    phone.stopHoldMusic().catch(() => undefined);
     phone.stopLoopback();
     phone.hangupCall();
     if (id) {
@@ -410,7 +412,19 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     const next = !onHold;
     setOnHold(next);
     setCallState(next ? 'on_hold' : 'connected');
-    phone.setMuted(next || muted);
+    if (next) {
+      const camp = campaigns.find((c) => c.id === campaignId);
+      const holdUrl = camp?.has_hold_audio ? `/api/campaigns/${camp.id}/hold-audio/` : null;
+      try {
+        await phone.startHoldMusic(holdUrl);
+      } catch (err) {
+        await phone.startHoldMusic(null);
+        showToast(err instanceof Error ? err.message : 'Playing default hold tone', 'info');
+      }
+    } else {
+      await phone.stopHoldMusic();
+      phone.setMuted(muted);
+    }
     if (callIdRef.current) {
       await api(`/api/calls/${callIdRef.current}/control/`, { method: 'POST', body: JSON.stringify({ on_hold: next }) }).catch(() => undefined);
     }

@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { Card, Badge, Button, Avatar } from '../ui/index';
 import { phoneNumbers } from '../../data/mock';
 import { api } from '../../api/client';
+import { can } from '../../api/access';
+import { useAuth } from '../../context/AuthContext';
 
 type AuditRow = {
   id: number;
@@ -26,19 +28,20 @@ const settingsNav = [
 ];
 
 export default function Settings({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+  const { user } = useAuth();
   const [section, setSection] = useState('general');
   const [auditLogs, setAuditLogs] = useState<AuditRow[]>([]);
   useEffect(() => {
-    if (section !== 'audit') return;
+    if (section !== 'audit' || !can(user, 'view_audit_logs')) return;
     api<AuditRow[]>('/api/audit-logs/').then(setAuditLogs).catch((err) => showToast(err.message, 'error'));
-  }, [section]);
+  }, [section, user]);
 
   return (
     <div className="flex-1 overflow-hidden flex bg-[#F8FAFC] fade-in">
       {/* Settings sidebar */}
       <aside className="w-56 border-r border-[#E2E8F0] bg-white p-3 shrink-0 overflow-y-auto">
         <div className="space-y-0.5">
-          {settingsNav.map(item => (
+          {settingsNav.filter((item) => item.id !== 'audit' || can(user, 'view_audit_logs')).map(item => (
             <button
               key={item.id}
               onClick={() => setSection(item.id)}

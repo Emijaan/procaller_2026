@@ -20,7 +20,7 @@ export default function CallHistory({ onViewRecording }: { onViewRecording: () =
   }, []);
 
   const filtered = rows.filter(c => {
-    const matchSearch = c.customer.toLowerCase().includes(search.toLowerCase()) || c.agent.toLowerCase().includes(search.toLowerCase());
+    const matchSearch = (c.customer || '').toLowerCase().includes(search.toLowerCase()) || (c.agent || '').toLowerCase().includes(search.toLowerCase());
     const matchFilter = filter === 'all' || c.direction.toLowerCase() === filter || c.status.toLowerCase().replace(' ', '_') === filter;
     return matchSearch && matchFilter;
   });

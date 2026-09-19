@@ -49,7 +49,7 @@ export default function Contacts({ showToast, onCall }: { showToast: (msg: strin
   const filtered = contacts.filter(c =>
     c.name.toLowerCase().includes(search.toLowerCase()) ||
     c.phone.includes(search) ||
-    c.company.toLowerCase().includes(search.toLowerCase())
+    (c.company || '').toLowerCase().includes(search.toLowerCase())
   );
 
   const toggleSelect = (id: string) =>

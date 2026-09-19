@@ -11,6 +11,16 @@ class CampaignSerializer(serializers.ModelSerializer):
     lead_count = serializers.IntegerField(source="contacts.count", read_only=True)
     assigned_users = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
     assigned_count = serializers.IntegerField(source="assigned_users.count", read_only=True)
+    has_hold_audio = serializers.SerializerMethodField()
+    hold_audio_name = serializers.SerializerMethodField()
+
+    def get_has_hold_audio(self, obj):
+        return bool(obj.hold_audio)
+
+    def get_hold_audio_name(self, obj):
+        if not obj.hold_audio:
+            return ""
+        return obj.hold_audio.name.rsplit("/", 1)[-1]
 
     class Meta:
         model = Campaign
@@ -34,6 +44,8 @@ class CampaignSerializer(serializers.ModelSerializer):
             "assigned_users",
             "assigned_count",
             "lead_count",
+            "has_hold_audio",
+            "hold_audio_name",
             "created_at",
             "updated_at",
         )

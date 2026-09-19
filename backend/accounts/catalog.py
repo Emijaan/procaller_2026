@@ -23,6 +23,7 @@ ROLE_PERMISSIONS = {
         "view_audit_logs",
     ],
     "agency": [
+        "manage_agency",
         "create_manager",
         "manage_manager",
         "manage_admin",

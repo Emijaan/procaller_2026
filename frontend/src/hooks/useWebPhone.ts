@@ -20,6 +20,36 @@ let shared: SipBundle | null = null;
 let owners = 0;
 let stopTimer: ReturnType<typeof setTimeout> | null = null;
 
+type HoldMix = {
+  ctx: AudioContext | null;
+  source: AudioBufferSourceNode | null;
+  pulse: ReturnType<typeof setInterval> | null;
+  original: MediaStreamTrack | null;
+  sender: RTCRtpSender | null;
+};
+
+let holdMix: HoldMix = { ctx: null, source: null, pulse: null, original: null, sender: null };
+
+function audioSender() {
+  const handler = shared?.conference?.sessionDescriptionHandler as { peerConnection?: RTCPeerConnection } | undefined;
+  return handler?.peerConnection?.getSenders().find((sender) => sender.track?.kind === 'audio') || null;
+}
+
+async function stopHoldMix() {
+  if (holdMix.sender && holdMix.original) {
+    try { await holdMix.sender.replaceTrack(holdMix.original); } catch { /* ignore */ }
+  }
+  if (holdMix.source) {
+    try { holdMix.source.stop(); } catch { /* ignore */ }
+  }
+  if (holdMix.pulse) clearInterval(holdMix.pulse);
+  if (holdMix.ctx) {
+    try { await holdMix.ctx.close(); } catch { /* ignore */ }
+  }
+  holdMix = { ctx: null, source: null, pulse: null, original: null, sender: null };
+  if (shared?.audio) shared.audio.muted = false;
+}
+
 function ensureAudioEl() {
   if (shared?.audio) return shared.audio;
   const el = document.createElement('audio');
@@ -227,6 +257,7 @@ export function useWebPhone() {
   }, [connectSip]);
 
   const hangupCall = useCallback(() => {
+    stopHoldMix().catch(() => undefined);
     hangupInviter(shared?.conference || null);
     if (shared) shared.conference = null;
   }, []);
@@ -238,6 +269,52 @@ export function useWebPhone() {
   const leaveConference = useCallback(() => {
     hangupCall();
   }, [hangupCall]);
+
+  const startHoldMusic = useCallback(async (url?: string | null) => {
+    await stopHoldMix();
+    const sender = audioSender();
+    if (!sender) return;
+    holdMix.sender = sender;
+    holdMix.original = sender.track || null;
+    const ctx = new AudioContext();
+    await ctx.resume().catch(() => undefined);
+    holdMix.ctx = ctx;
+    const dest = ctx.createMediaStreamDestination();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.28;
+    gain.connect(dest);
+    if (url) {
+      const token = localStorage.getItem('procaller.access') || '';
+      const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) throw new Error('Could not load campaign hold audio');
+      const buffer = await ctx.decodeAudioData(await res.arrayBuffer());
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      source.connect(gain);
+      source.start();
+      holdMix.source = source;
+    } else {
+      const burst = () => {
+        if (holdMix.ctx !== ctx) return;
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = 440;
+        osc.connect(gain);
+        osc.start();
+        window.setTimeout(() => { try { osc.stop(); } catch { /* ignore */ } }, 350);
+      };
+      burst();
+      holdMix.pulse = window.setInterval(burst, 1400);
+    }
+    const music = dest.stream.getAudioTracks()[0];
+    if (music) await sender.replaceTrack(music);
+    if (shared?.audio) shared.audio.muted = true;
+  }, []);
+
+  const stopHoldMusic = useCallback(async () => {
+    await stopHoldMix();
+  }, []);
 
   const setMuted = useCallback((muted: boolean) => {
     shared?.local?.getAudioTracks().forEach((t) => {
@@ -269,6 +346,7 @@ export function useWebPhone() {
     }
     stopRingtone();
     stopLoopback();
+    stopHoldMix().catch(() => undefined);
     hangupInviter(shared?.conference || null);
     try { shared?.registerer.unregister(); } catch { /* ignore */ }
     try { shared?.ua.stop(); } catch { /* ignore */ }
@@ -290,6 +368,8 @@ export function useWebPhone() {
     joinConference,
     leaveConference,
     setMuted,
+    startHoldMusic,
+    stopHoldMusic,
     sendDtmfTone,
     shutdown,
     forceStop,
@@ -302,6 +382,7 @@ export function forceStopPhone() {
     clearTimeout(stopTimer);
     stopTimer = null;
   }
+  stopHoldMix().catch(() => undefined);
   hangupInviter(shared?.conference || null);
   try { shared?.registerer.unregister(); } catch { /* ignore */ }
   try { shared?.ua.stop(); } catch { /* ignore */ }

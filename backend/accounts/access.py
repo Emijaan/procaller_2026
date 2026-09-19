@@ -9,7 +9,9 @@ def role_of(user):
 
 
 def is_super_admin(user):
-    return bool(user and (user.is_superuser or role_of(user) == User.Role.SUPER_ADMIN))
+    if not user:
+        return False
+    return role_of(user) == User.Role.SUPER_ADMIN or bool(user.is_superuser and role_of(user) in {User.Role.SUPER_ADMIN, User.Role.ADMIN})
 
 
 def has_perm(user, code):
@@ -103,6 +105,25 @@ def scoped_leads(user, qs):
             | Q(campaign__assigned_users=user)
         ).distinct()
     return qs.filter(Q(owner=user) | Q(campaign__assigned_users=user)).distinct()
+
+
+def scoped_calls(user, qs):
+    if is_super_admin(user):
+        return qs
+    org = agency_of(user)
+    if org:
+        qs = qs.filter(Q(agent__organization=org) | Q(campaign__agency=org))
+    else:
+        return qs.filter(agent=user)
+    role = role_of(user)
+    if role == User.Role.AGENCY:
+        return qs
+    tree = descendant_ids(user)
+    if role == User.Role.MANAGER:
+        return qs.filter(Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__manager=user))
+    if role == User.Role.ADMIN:
+        return qs.filter(Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__admin=user))
+    return qs.filter(agent=user)
 
 
 def require_perm(user, code):
