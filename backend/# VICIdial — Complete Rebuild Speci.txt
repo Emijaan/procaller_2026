@@ -1,0 +1,605 @@
+# VICIdial — Complete Rebuild Specification (this host)
+
+**Source studied on this server:** VICIdial **2.14b0.5** / astGUIclient  
+**Install date stamp:** 18 Mar 2026  
+**Asterisk:** `16.30.0-vici` (`servers.server_id=vicibox11`, `conf_engine=MEETME`, `outbound_calls_per_second=5`)  
+**DB:** MySQL `asterisk` (schema **1691**, **316** tables)  
+**Web:** `/srv/www/htdocs/vicidial` (admin) and `/srv/www/htdocs/agc` (agent)  
+**Daemons:** `/usr/share/astguiclient/*.pl`  
+**Config:** `/etc/astguiclient.conf`  
+**Server IP:** `192.168.0.200`  
+**Max trunks:** 23  
+
+This is **not** the NewIVR Django spec. NewIVR is an IVR blaster. VICIdial is a full **agent ACD + predictive/ratio outbound dialer**. Use [CALLING_SOFTWARE_REBUILD_SPEC.md](CALLING_SOFTWARE_REBUILD_SPEC.md) for NewIVR.
+
+This file is an architecture / product spec for rebuilding equivalent calling software. It summarizes algorithms and AMI/dialplan contracts. Do not treat it as a copy of VICIdial source (VICIdial is AGPLv2).
+
+---
+
+## 1. What VICIdial is
+
+A call-center platform:
+
+1. Agents log into a web phone UI (`/agc/vicidial.php`) and sit in an Asterisk **MeetMe** conference (`8600xxx`).
+2. A hopper process keeps a short queue of dialable leads per campaign.
+3. An auto-dialer places `waiting_agents × auto_dial_level` outbound calls through AMI.
+4. When a customer answers, AGI (`agi-VDAD_ALL_outbound.agi`) routes the live channel into an idle agent’s MeetMe room.
+5. The agent talks, then **dispositions** the lead (sale, NI, DNC, callback, …).
+6. Drops (answered with no agent) play audio / voicemail / in-group, and count toward drop-rate if using adaptive dialing.
+
+**This host’s live campaigns all use `dial_method=RATIO`** (fixed multiplier), not ADAPT_*. Column `amd_type=AMD` is set, but **`campaign_vdad_exten=8368`** so Asterisk `AMD()` (`8369`) is **not** in the live answer path. `amd_send_to_vmx=N`, `cpd_amd_action=DISABLED`.
+
+---
+
+## 2. NewIVR vs VICIdial (do not mix)
+
+| | NewIVR | VICIdial |
+|--|--------|----------|
+| Goal | Play IVR / TTS, hang up | Connect humans to customers |
+| Dial math | Keep N channels full | `agents × auto_dial_level` (RATIO) or adaptive drop-rate |
+| Answer path | `outbound-ivr` Playback | `8368` → VDAD AGI → MeetMe |
+| Channel | `SIP/gsm222/10digit` | `Local/{prefix}{number}@default` then `Dial(SIP/gsm222/…)` |
+| Prefix here | strip 91 in Python | `dial_prefix=33` → `_33X.` strips 3 digits |
+| DB | Postgres `newivr` | MySQL `asterisk` |
+| UI | Django `/newivr/` | PHP `/vicidial/` + `/agc/` |
+
+Same GSM peer `gsm222`. Same Asterisk. Separate contexts.
+
+---
+
+## 3. High-level architecture
+
+```
+Agent browser ──► /agc/vicidial.php ──► SIP phone 1000–1020
+                         │
+                         ▼
+              MeetMe 8600xxx  (agent always in conference)
+
+Hopper cron (every 1 min)          AST_VDadapt (if ADAPT_*)
+  vicidial_list ──► vicidial_hopper   adjusts auto_dial_level
+
+AST_VDauto_dial.pl  (loop)
+  goal = agents × auto_dial_level
+  pull hopper READY → QUEUE
+  INSERT vicidial_manager Originate
+
+AST_manager_send.pl
+  NEW → QUEUE → spawn AST_send_action_child.pl
+  AMI Action: Originate
+
+Asterisk
+  Channel: Local/33{phone}@default
+  Exten:   8368 @ default     (other leg after answer)
+  _33X. → Dial(SIP/gsm222/${EXTEN:3})
+
+Customer answers
+  8368 → FastAGI call_log → agi-VDAD_ALL_outbound.agi
+       → finds READY agent → Redirect into MeetMe 8600xxx
+
+Hangup
+  h → FastAGI call_log (cause, dialstatus, dialedtime, answeredtime)
+  AST_update_AMI2.pl / AST_manager_listen_AMI2.pl keep live state
+```
+
+---
+
+## 4. Processes that must run
+
+`VARactive_keepalives => 123456789ES` in `/etc/astguiclient.conf`.  
+`ADMIN_keepalive_ALL.pl` runs **every minute** from crontab and respawns SCREEN sessions.
+
+| Code | Process | Role |
+|------|---------|------|
+| 1 | `AST_update_AMI2.pl` | Keep agent/call state in sync from AMI |
+| 2 | `AST_manager_send.pl` + `AST_manager_listen_AMI2.pl` | Send AMI actions; listen events |
+| 3 | `AST_VDauto_dial.pl` | Place outbound calls |
+| 4 | `AST_VDremote_agents.pl` | Virtual/remote agents (no GUI) |
+| 5 | `AST_VDadapt.pl` | Predictive dial-level (one server only) |
+| 6 | `FastAGI_log.pl` | FastAGI `:4577` call logging |
+| 7 | `AST_VDauto_dial_FILL.pl` | Multi-server fill (one server only) |
+| 8 | `ip_relay` | Blind monitor |
+| 9 | Timeclock auto-logout | |
+| E | `AST_inbound_email_parser.pl` | Inbound email |
+| S | SIP logger | Asterisk 13+ |
+
+**Cron (not SCREEN):**
+
+| Schedule | Script |
+|----------|--------|
+| `* * * * *` | `AST_VDhopper.pl -q` — fill hopper |
+| `* * * * *` | `ADMIN_keepalive_ALL.pl` |
+| `* * * * *` | `AST_manager_kill_hung_congested.pl` |
+| `* * * * *` | `AST_vm_update.pl`, `AST_conf_update.pl` |
+| hourly | `AST_cleanup_agent_log.pl`, `AST_flush_DBqueue.pl` |
+| nightly | agent day/week reports, DB optimize, callback purge, GMT adjust |
+| every 3 min | recording mix + MP3 compress |
+
+---
+
+## 5. How a call is generated (exact contract)
+
+This is the heart of VICIdial outbound.
+
+### 5.1 How many calls to place (RATIO)
+
+Every auto-dial loop:
+
+```
+agent_count =
+  available_only_ratio_tally ? READY agents : non-paused agents
+  (then optional thresholds / in-call tally / dl_diff_target)
+
+goal      = auto_dial_level × agent_count
+exist     = count(vicidial_auto_calls in SENT|RINGING|LIVE|XFER|CLOSER
+                  for this campaign on this server)
+            + inbound LIVE if blended
+makecalls = goal - exist
+            capped by servers.max_vicidial_trunks (23 here)
+```
+
+**MANUAL / INBOUND_MAN:** `makecalls = 0` (agent clicks Dial).  
+**ADAPT_***: `AST_VDadapt.pl` rewrites `auto_dial_level` first; then the same formula runs.
+
+Live campaigns:
+
+| campaign_id | active | level | hopper | auto hopper | recording | call time |
+|-------------|--------|-------|--------|-------------|-----------|-----------|
+| testing | Y | 3 | 200 | N | ALLFORCE | 12pm–5pm |
+| BAJAJPTP | Y | 3 | 1 | N | ALLFORCE | 12pm–5pm |
+| AMITKUMA | Y | 4 | 200 | **Y** | ALLCALLS | 24hours |
+| KHUSHIAP | N | 4 | 200 | Y | ONDEMAND | 24hours |
+
+Shared: RATIO, prefix `33`, VDAD `8368`, drop AUDIO/5s, `next_agent_call=random`, `lead_order=DOWN`, `auto_alt_dial=NONE`, inbound off, email/chat off, wrapup 0s, CID placeholder `0000000000`. Adaptive fields exist (3% / max 3.0 / intensity 0) but **RATIO does not use them**.
+
+Example: 5 READY agents on AMITKUMA → goal = 20 simultaneous outbound legs.
+
+### 5.2 Pull from hopper
+
+```
+UPDATE vicidial_hopper
+  SET status='QUEUE', user='VDAD_{server_ip}'
+  WHERE campaign_id=? AND status='READY'
+  ORDER BY priority DESC, hopper_id
+  LIMIT makecalls
+
+then one-by-one:
+  SELECT lead from hopper QUEUE
+  load vicidial_list
+  DELETE hopper row
+  INSERT vicidial_manager Originate
+  INSERT vicidial_auto_calls status=SENT
+```
+
+### 5.3 AMI Originate (via DB, not direct from autodial)
+
+Autodial **does not** open AMI itself. It inserts `vicidial_manager` status=`NEW`.  
+`AST_manager_send.pl` marks `QUEUE`, spawns `AST_send_action_child.pl`, which sends AMI.
+
+```
+Action:   Originate
+Channel:  Local/{dial_prefix}{phone}@default
+Context:  default
+Exten:    {campaign_vdad_exten}     # live: 8368
+Priority: 1
+Callerid: "{VqueryCID}" <{campaign_cid}>
+Timeout:  {dial_timeout * 1000}     # live: 60000 ms ring timeout
+```
+
+**No AMI `Variable:` headers.** Identity is the **CallerID name**:
+
+```
+VqueryCID = "V" + mmddHHMMSS + lead_id zero-padded to 10 digits
+example:   V09191530120000001234
+```
+
+VDAD, FastAGI, and `AST_manager_listen_AMI2.pl` join the call back to `vicidial_auto_calls.callerid` / `lead_id` using that string. Rebuild must keep a unique CID-name token (do not rely on channel vars).
+
+`vicidial_manager` cmd lines: b=Exten, c=Context, d=Channel, e=Priority, f=Callerid, g=Timeout, k=`VDACnote: campaign|lead|phone_code|phone|OUT|alt|priority`.
+
+Asterisk 13+: servers may set `routing_prefix` (e.g. `13`) so Exten becomes `138368`. Dialplan `_1383XX` runs `agi-VDAD_local_optimize.agi` and redirects the bridged channel to `8368`. Confirm `servers.routing_prefix` on rebuild.
+
+**Channel construction on this host:**
+
+```
+omit_phone_code = N  (all live campaigns)
+dial_prefix     = 33
+Ndialstring     = 33 + phone_code + phone_number
+Channel         = Local/33{phone_code}{phone}@default
+```
+
+If `omit_phone_code=Y`: `Local/{prefix}{phone}@default`.  
+If prefix is `x` / `X`: no prefix.
+
+### 5.4 Trunk dialplan (this host)
+
+`[default]` in `/etc/asterisk/extensions.conf`:
+
+```
+exten => _33X.,1,AGI(agi://127.0.0.1:4577/call_log)
+exten => _33X.,2,Dial(SIP/gsm222/${EXTEN:3},,tTo)
+exten => _33X.,3,Hangup
+```
+
+`${EXTEN:3}` drops the `33` prefix **and one extra digit**.  
+So `Local/339876543210@default` dials `SIP/gsm222/9876543210` (10 digits) if the Local extension is 13 characters `33`+11, **or** if phone is stored as 10 digits with `phone_code` making the third stripped character.
+
+**Practical effect here:** prefix `33` is the VICIdial equivalent of NewIVR’s “strip 91 / dial 10 digits on gsm222”. When rebuilding, define **one** explicit rule (e.g. always Dial 10-digit Indian mobiles) rather than relying on `${EXTEN:3}` magic.
+
+### 5.5 After answer — VDAD
+
+Other leg of the Local channel hits:
+
+```
+exten => 8368,1,AGI(agi://127.0.0.1:4577/call_log)
+exten => 8368,n,AGI(agi-VDAD_ALL_outbound.agi,NORMAL-----LB-----${CONNECTEDLINE(name)})
+exten => 8368,n,Hangup()
+```
+
+`NORMAL-----LB` = normal connect, **load-balanced** agent select.
+
+VDAD AGI:
+
+1. Resolve lead from CallerID token / `vicidial_auto_calls`.
+2. Mark call `LIVE`.
+3. Wait for a `vicidial_live_agents` row with `status=READY` on this campaign (`next_agent_call=random` on this host).
+4. If an agent is READY: set agent `INCALL`, Redirect customer channel into agent `conf_exten` (MeetMe `8600xxx`).
+5. If nobody is READY within `drop_call_seconds` (5s here): **DROP** → `drop_action=AUDIO` (play campaign drop audio), log DROP, optionally lockout.
+
+Other VDAD extens shipped:
+
+| Exten | Meaning |
+|-------|---------|
+| 8365 | NORMAL, same-server only (`SO`) |
+| 8366 | SURVEY campaign IVR first |
+| 8367 | Load-balance overflow (`LO`) |
+| **8368** | **NORMAL load-balanced (this host)** |
+| 8369 | AMD then VDAD |
+| 8372 | Auto reminder |
+| 8373 | Survey + AMD |
+
+### 5.6 Agent conference
+
+On login, agent is originated into MeetMe:
+
+```
+exten => _86000[5-9]X,1,Meetme(${EXTEN},F)
+exten => _8600[1-2]XX,1,Meetme(${EXTEN},F)
+```
+
+Customer is redirected into the **same** conference. Agent hears the customer there — not via a SIP transfer to the agent phone.
+
+**Agent login Originate:** Channel `SIP/{phone_extension}` (or IAX2), Exten = session MeetMe `8600xxx`. UI inserts `vicidial_live_agents` as PAUSED, then READY.
+
+**Manual dial:** autodialer is idle. Agent GUI Originate `Local/{prefix}{number}@default` with **Exten = the MeetMe room**, not 8368.
+
+**Recording:** muted participant `Local/5{8600xxx}@default` (`_58600XXX` Meetme Fmq) sent to **8309** `Monitor(wav,${CALLERID(name)})`. Mix/MP3 cron later. Some VDAD paths Monitor the customer channel directly.
+
+**Park:** 8301 + `park_CID.agi`; agent GUI originates the customer into park.
+
+### 5.7 Hangup logging
+
+Every context’s `h` extension:
+
+```
+AGI(agi://127.0.0.1:4577/call_log--HVcauses--PRI-----NODEBUG-----
+    ${HANGUPCAUSE}-----${DIALSTATUS}-----${DIALEDTIME}-----${ANSWEREDTIME}-----…)
+```
+
+FastAGI writes `call_log` / updates `vicidial_log`. Auto-dialer also times out SENT/RINGING rows and writes NA/B/DROP.
+
+---
+
+## 6. Dial strategies (rebuild all of these)
+
+| `dial_method` | Behavior |
+|---------------|----------|
+| `MANUAL` | Agent previews/dials; autodial places 0 calls |
+| `RATIO` | Fixed `auto_dial_level` × agents (**this host**) |
+| `ADAPT_AVERAGE` | Smooth toward drop-rate target |
+| `ADAPT_TAPERED` | Aggressive early, taper near `adaptive_latest_server_time` |
+| `ADAPT_HARD_LIMIT` | Never exceed `adaptive_dropped_percentage` |
+| `INBOUND_MAN` | Inbound + manual outbound |
+| `SHARED_*` | Same methods across campaigns sharing an agent pool |
+
+### Adaptive inputs (AST_VDadapt.pl)
+
+- Current drop % (campaign or `drop_rate_group`)
+- Target `adaptive_dropped_percentage` (default 3%)
+- `adaptive_maximum_level` cap
+- `adaptive_intensity` (how hard to change level)
+- `adaptive_dl_diff_target` (aim for N extra waiting customers or waiting agents)
+- One-minute averages of ready agents vs waiting calls (`differential_onemin`)
+
+```
+differential_target = (ready_avg - waiting_calls_avg) + dl_diff_target
+  dl_diff_target −1 → aim for one idle agent; +1 → one waiting customer
+suggested_level = current_level × (1 + intensity_adjusted_differential)
+clamp to [1.0, adaptive_maximum_level]
+```
+
+Drop brakes after the suggestion:
+
+- Last minute: if calls > 20 and drop% > 50% → **halve**
+- Today drop% of answers > target:
+  - `ADAPT_HARD_LIMIT` → force **1.0**
+  - `ADAPT_AVERAGE` → **halve**
+  - `ADAPT_TAPERED` → scale by hours left until `adaptive_latest_server_time`, then 1.0
+
+`UPDATE vicidial_campaigns.auto_dial_level`. RATIO does not run this (level stays admin-set).
+
+UK OFCOM drop calc is a separate flag (`ofcom_uk_drop_calc`).
+
+---
+
+## 7. Hopper strategy (AST_VDhopper.pl)
+
+Runs every minute. For each **active** campaign:
+
+1. Activate due **callbacks** (`vicidial_callbacks` ACTIVE/TFHCCL whose time has come) → lead `called_since_last_reset=N`.
+2. Count hopper rows; fill until `hopper_level` (or auto hopper = `multi × agents × dial_level × timeout_factor`).
+3. Select from `vicidial_list` where:
+   - `list_id` in campaign’s active lists
+   - `status` in campaign `dial_statuses` (typically `NEW` plus recycle statuses)
+   - `called_since_last_reset='N'`
+   - GMT / `local_call_time` window (state/areacode timezone)
+   - not in internal DNC / campaign DNC / areacode DNC
+   - not over `call_count_limit` / 24-hour call limit
+   - optional lead filter SQL, list mix, demographic quotas
+4. `INSERT vicidial_hopper (READY, priority, alt_dial=MAIN)`.
+5. Order: campaign `lead_order` (DOWN, UP, RANDOM, rank, owner, …) + optional secondary + randomize.
+
+Hopper statuses: `READY`, `QUEUE` (being dialed), `HOLD`, `DNC`.
+
+**Sources / priority:** S standard (0), C callback (50), A auto-alt (25), ADDR3 (20), extended alts (15), N Nth-NEW, R recycle, D drop-run (99), P API, Q no-hopper queue.
+
+Autodialer does **not** re-check GMT; hopper already filtered. Illegal-GMT hopper rows are deleted on the next hopper run.
+
+**no_hopper_dialing=Y:** skip hopper; agent searches/dials live.
+
+---
+
+## 8. Lead / contact lifecycle
+
+`vicidial_list.status` is the lead disposition. Common:
+
+| Status | Meaning |
+|--------|---------|
+| NEW | never dialed |
+| QUEUE / INCALL | live |
+| NA | no answer |
+| B | busy |
+| DC | disconnected |
+| DROP | answered, no agent |
+| AA | answering machine (AMD) |
+| SALE / A / NI / DNC / CBHOLD | agent dispo |
+| DNCL / DNCC | hopper flagged DNC |
+
+`called_since_last_reset`: `N` = eligible for hopper; `Y` after a dial. Admin “reset lists” sets back to `N`.
+
+`auto_alt_dial`: after NA/B/etc., dial `alt_phone` / `address3` / extended alts automatically (campaigns here: `NONE`).
+
+Scheduled callbacks: `vicidial_callbacks` → hopper when due.
+
+---
+
+## 9. Agent login flow
+
+1. SIP phone registers (peers 1000–1020 in `[vicidial-auto-phones]`).
+2. Browser opens `/agc/vicidial.php` (AJAX: `vdc_db_query.php`, `conf_exten_check.php`, `manager_send.php`).
+3. Login: user + campaign + phone extension + shift.
+4. Allocate `vicidial_conferences.conf_exten` (`8600xxx`); kick leftovers via `Local/5555{conf}@default` → 8300 Hangup.
+5. Originate agent phone `SIP/{extension}` into that MeetMe; insert `vicidial_live_agents` PAUSED → READY. Heartbeat `conf_exten_check.php`.
+6. Agent UI polls: pause/resume, hangup, dispo, transfer, 3-way, callback, script, web form.
+7. `next_agent_call` on this host: **`random`**. Other options: oldest_call_start, fewest_calls, longest_wait_time, campaign_grade, overall_user_level, etc.
+
+**Remote agents** (`AST_VDremote_agents.pl`): fake READY agents that auto-answer into an extension (IVR or external number) — used for “unattended” connect.
+
+---
+
+## 10. Feature catalog (VICIdial product)
+
+Rebuild these if you want “all VICIdial features.” This host does not use every one.
+
+### Core telephony
+- Outbound RATIO / ADAPT / MANUAL / blended inbound
+- In-groups (inbound queues), DIDs, call menus (IVR trees)
+- Agent MeetMe, park, hold, transfer (blind/warm), 3-way
+- Recording: ONDEMAND / ALLCALLS / ALLFORCE / NEVER
+- AMD (`8369` + `VD_amd.agi`) and CPD/KHOMP AMD types
+- Drop actions: HANGUP, AUDIO, MESSAGE, VOICEMAIL, IN_GROUP, CALLMENU
+- CID: campaign CID, list CID, custom CID, areacode/state CID groups
+- Call times / holidays / GMT lead offset
+- 24-hour call limits, daily limits, call quotas, demographic quotas
+
+### Lists and compliance
+- Lists, list mix, lead filters, territories, owner-only dial
+- Internal DNC, campaign DNC, areacode DNC, other-campaign DNC, international DNC scrub
+- Alt numbers, multi-lead households
+- Lead loader (CSV), list download, split/merge, reset called flags
+- Scheduled callbacks (user-only or anyone)
+
+### Agent desktop
+- Scripts, web forms (3 URLs), CRM popup, clipboard, pause codes
+- Preview dial, skip, manual dial override, search leads
+- Chat, email inbox, inbound email parser
+- QC (quality control) scorecards
+- Timeclock, user groups, permissions (user_level 1–9)
+
+### Admin / reports (`/vicidial/`)
+- Users, phones, campaigns, in-groups, lists, remote agents
+- Realtime (`realtime_report.php`, `AST_timeonVDAD*.php`)
+- Agent time/performance, dispositions, inbound daily, hopper list
+- Dial log, carrier log, hangup cause, recordings lookup
+- Whiteboard, Erlang forecast, inventory snapshot
+- Audio store, call cards, NANPA, KHOMP admin
+
+### APIs
+- Agent API (`/agc/api.php`)
+- Non-agent API (`/vicidial/non_agent_api.php`) — add lead, update, hopper, etc.
+- `start_call_url` / `dispo_call_url` / `na_call_url` webhooks per campaign
+
+### Multi-server
+- `servers` table, `vicidial_balance_active=Y` on this box
+- FILL script places overflow calls on other servers
+- Load-balance VDAD (`LB` vs `SO` vs `LO`)
+
+### Not the same as NewIVR
+- No Piper TTS campaign engine
+- Survey/broadcast is **`survey_method` + VDAD exten**, not a dial_method. Default here is `AGENT_XFER` with `8368` (agent connect). Classic “leave a message” broadcast uses `survey_method=CAMPREC_60_WAV` and survey VDAD (`8366`/`8373`), not used on these four campaigns.
+- No Django; PHP + Perl + MySQL
+
+---
+
+## 11. Core data model (rebuild these tables)
+
+MySQL database `asterisk` (**316** tables, schema 1691). Minimum viable outbound+agent:
+
+| Table | Purpose |
+|-------|---------|
+| `servers` | server_ip, trunks, asterisk version, balance |
+| `phones` | SIP/IAX login, conf_exten, protocol |
+| `vicidial_users` | agents/admins, user_level, group |
+| `vicidial_user_groups` | permissions |
+| `vicidial_campaigns` | all dialer settings (huge row) |
+| `vicidial_lists` | list → campaign, active, expiration |
+| `vicidial_list` | **the lead** (phone, status, GMT, names, custom) |
+| `vicidial_hopper` | short dial queue |
+| `vicidial_auto_calls` | in-flight calls |
+| `vicidial_manager` | AMI command queue |
+| `vicidial_live_agents` | who is logged in / READY / INCALL |
+| `vicidial_conferences` | MeetMe rooms in use |
+| `vicidial_log` | outbound CDR-like per lead attempt |
+| `vicidial_closer_log` | inbound/closer CDR |
+| `vicidial_agent_log` | pause/wait/talk/dispo time |
+| `call_log` | Asterisk uniqueid log (FastAGI) |
+| `recording_log` | recording files |
+| `vicidial_statuses` / `vicidial_campaign_statuses` | dispo catalog |
+| `vicidial_dnc` / `vicidial_campaign_dnc` | DNC |
+| `vicidial_callbacks` | scheduled callbacks |
+| `vicidial_inbound_groups` | in-groups |
+| `vicidial_inbound_dids` | DID → in-group / menu |
+| `vicidial_call_menu` | IVR menus |
+| `vicidial_call_times` | dial windows |
+| `vicidial_campaign_stats` | realtime drop%/differential |
+| `vicidial_dial_log` | every Originate attempt |
+| `park_log` | park |
+| `vicidial_remote_agents` | RA config |
+
+**Lead columns:** `lead_id, status, user, vendor_lead_code, source_id, list_id, gmt_offset_now, called_since_last_reset, phone_code, phone_number, name/address fields, alt_phone, email, comments, called_count, last_local_call_time, rank, owner`.
+
+Custom list fields live in `custom_{list_id}` tables.
+
+---
+
+## 12. Web UI map
+
+**Admin** `/vicidial/admin.php` — campaigns, lists, users, phones, in-groups, remote agents, call times, scripts, filters, DNC, audio, servers, system settings.
+
+`admin.php` list screens (`ADD=`): 10 campaigns, 100 lists, 1001 in-groups, 1300 DIDs, 1500 call menus, 10000 remote agents, 100000 user groups, 1000000 scripts, 10000000 filters, 100000000 call times, 10000000000 phones, 100000000000 servers, 140000000000 carriers, 1000000000000 conferences, 100000000000000 QC, 999999 reports, 31/34 modify campaign.
+
+Campaign modify sub-tabs: Statuses, HotKeys, Lead Recycle, Auto Alt Dial, Pause Codes, QC, List Mix, Survey, Presets, AC-CID.
+
+**Agent** `/agc/vicidial.php` — live desktop; AJAX `vdc_db_query.php`.
+
+**Realtime** `/vicidial/realtime_report.php`.
+
+**Reports** dozens of `AST_*.php` under `/vicidial/` (agent time, performance, inbound, recordings, hopper, VDAD stats).
+
+**Timeclock** `/agc/timeclock.php`.
+
+---
+
+## 13. Asterisk pieces required
+
+- chan_sip (this host) or PJSIP with matching Dial strings
+- `app_meetme` + DAHDI timing (or ConfBridge with VICIdial C keepalive)
+- `app_amd` if using 8369
+- AMI users `cron` (write originate), `updatecron`, `listencron`, `sendcron` (already in `/etc/asterisk/manager.conf`)
+- FastAGI `127.0.0.1:4577`
+- Dialplan includes: `extensions-vicidial.conf` + `[default]` trunk pattern
+- Monitor dir `/var/spool/asterisk/monitor` → mix/mp3 cron
+
+Do **not** put VICIdial traffic in NewIVR’s `outbound-ivr`.
+
+---
+
+## 14. This host — live facts
+
+- VICIdial **2.14b0.5**, schema 1691, 316 tables, `server_id=vicibox11`, MeetMe, 5 outbound CPS, max 23 trunks
+- 4 campaigns (3 active), 6 lists, 11,568 leads, 20 users (18 active), 18 phones, 2 in-groups, 0 DNC, 0 callbacks, 10 recordings, **39,623** `vicidial_log` rows
+- All campaigns: `RATIO`, prefix `33`, VDAD `8368`, drop AUDIO after 5s, `next_agent_call=random`, `lead_order=DOWN`
+- `amd_type=AMD` but **8368 = no Asterisk AMD()**; `amd_send_to_vmx=N`
+- testing / BAJAJPTP: call time 12pm–5pm, auto-hopper off; AMITKUMA: 24hours + auto-hopper on
+- `omit_phone_code=N`; campaign CID is placeholder zeros
+- Hopper had AMITKUMA READY rows when inspected; 0 live agents / 0 auto-calls
+- Recordings mixed every 3 minutes to MP3
+- VICIdial and NewIVR share Asterisk; NewIVR AMI users overlap VICIdial names (`cron` / `listencron`)
+
+---
+
+## 15. Recommended rebuild (original software)
+
+If the goal is **your own** dialer with VICIdial’s capabilities (not forking the AGPL PHP/Perl tree):
+
+1. **Agent presence** — login, READY/PAUSED/INCALL, SIP or WebRTC phone.
+2. **Bridge** — conference or `Bridge()` so agent is already up before customer answers (avoids early media issues).
+3. **Lead DB + hopper** — call-time, DNC, recycle, callbacks.
+4. **RATIO dialer** — `goal = ready_agents × level`; AMI Originate Local or direct SIP.
+5. **Answer router** — AGI/ARI: find READY agent or DROP.
+6. **Dispositions + recordings + realtime dashboard**.
+7. Then ADAPT drop-rate, inbound in-groups, transfers, AMD, APIs.
+
+Keep NewIVR-style IVR blaster as a **separate campaign type** (no agents, play TTS, DTMF) rather than overloading VDAD.
+
+### Implementation order
+
+1. SIP phone + MeetMe/Bridge agent login  
+2. Manual dial from agent UI  
+3. Hopper + RATIO autodial + VDAD connect  
+4. Dispo + vicidial_log equivalent  
+5. Recording  
+6. Drop audio  
+7. DNC + call times  
+8. Inbound in-group  
+9. Adaptive dial  
+10. Reports / realtime  
+11. AMD, survey, remote agents, multi-server  
+
+---
+
+## 16. Pitfalls
+
+1. **Originate is queued in MySQL** (`vicidial_manager`). If `AST_manager_send.pl` is dead, hopper fills but nothing rings.
+2. **Join key is CallerID name `V{datetime}{lead_id}`**, not AMI Variables. Losing or rewriting CID name breaks VDAD matching.
+2. **Local channel two-leg design** — Channel dials the PSTN; Exten 8368 only runs **after answer**. Timeout on Originate is ring timeout.
+3. **Prefix `33` + `${EXTEN:3}`** is site-specific. Document the real number sent to the gateway.
+4. **Drop rate** — connecting too many calls vs agents creates DROP. RATIO 3–4 is aggressive; ADAPT exists because of this.
+5. **MeetMe needs DAHDI timing.** ConfBridge is the modern alternative (VICIdial “C” keepalive).
+6. **Shared AMI users with NewIVR** — event filters on `listencron` were built for VICIdial; NewIVR UserEvents can be dropped (see NewIVR spec).
+7. **called_since_last_reset** — forgetting list reset looks like “no leads.”
+8. **FastAGI 4577** must stay up or CDRs/causes vanish.
+9. **License:** VICIdial source is AGPLv2. A clean-room rebuild can be any license; copying PHP/Perl files is not.
+
+---
+
+## 17. Source map (this server)
+
+| Path | What |
+|------|------|
+| `/etc/astguiclient.conf` | Paths, DB, keepalives |
+| `/usr/share/astguiclient/AST_VDauto_dial.pl` | Place calls |
+| `/usr/share/astguiclient/AST_VDhopper.pl` | Fill hopper |
+| `/usr/share/astguiclient/AST_VDadapt.pl` | Predictive level |
+| `/usr/share/astguiclient/AST_manager_send.pl` | AMI originate queue |
+| `/usr/share/astguiclient/AST_update_AMI2.pl` | Live state |
+| `/var/lib/asterisk/agi-bin/agi-VDAD_ALL_outbound.agi` | Connect to agent |
+| `/var/lib/asterisk/agi-bin/VD_amd.agi` | AMD result |
+| `/etc/asterisk/extensions.conf` | `_33X.`, `8368`, MeetMe `8600` |
+| `/etc/asterisk/extensions-vicidial.conf` | auto-generated phones/internal |
+| `/srv/www/htdocs/vicidial/` | Admin + reports |
+| `/srv/www/htdocs/agc/` | Agent UI |
+| MySQL `asterisk` | All state |
+
+---
+
+*Generated from this host’s running VICIdial 2.14b0.5 / Asterisk 16-vici / schema 1691. Pair with `CALLING_SOFTWARE_REBUILD_SPEC.md` for the Django IVR dialer.*

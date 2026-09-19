@@ -1,0 +1,41 @@
+; ProCaller WebRTC + manual outbound — drop into Asterisk when TELEPHONY_BACKEND=asterisk
+; Agent browser registers over WSS, then Django ARI originates PSTN into ConfBridge.
+
+[transport-wss]
+type=transport
+protocol=wss
+bind=0.0.0.0:8089
+cert_file=/etc/asterisk/keys/asterisk.pem
+priv_key_file=/etc/asterisk/keys/asterisk.key
+
+[webrtc-endpoint](!)
+type=endpoint
+transport=transport-wss
+context=procaller-agent
+disallow=all
+allow=opus,ulaw
+webrtc=yes
+dtls_auto_generate_cert=yes
+force_rport=yes
+rewrite_contact=yes
+rtp_symmetric=yes
+
+[1001](webrtc-endpoint)
+auth=1001
+aors=1001
+[1001]
+type=auth
+auth_type=userpass
+username=1001
+password=1001
+[1001]
+type=aor
+max_contacts=2
+
+[procaller-agent]
+; Agent SIP.js INVITE sip:conf-<room>@host
+exten => _conf-.,1,NoOp(ProCaller agent conference)
+ same => n,ConfBridge(${EXTEN})
+ same => n,Hangup()
+
+; ARI app "procaller" originates PJSIP/<10digit>@gsm222 then joins the same ConfBridge

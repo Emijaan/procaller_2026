@@ -1,0 +1,10 @@
+{
+  "description": "An enterprise-grade SaaS platform combining advanced dialing, CRM, AI call intelligence, and analytics to optimize business communication and sales engagement.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
