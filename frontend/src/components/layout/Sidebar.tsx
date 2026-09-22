@@ -102,7 +102,8 @@ export default function Sidebar({ active, onNavigate, collapsed, onToggle, user 
           if (item.id === 'dialer') return can(user, 'manual_call') || can(user, 'preview_auto_dial');
           if (item.id === 'campaigns') return can(user, 'create_campaign') || can(user, 'edit_campaign') || can(user, 'preview_auto_dial');
           if (item.id === 'team') return can(user, 'manage_user') || can(user, 'manage_manager') || can(user, 'manage_admin');
-          if (item.id === 'analytics' || item.id === 'reports') return can(user, 'view_reports');
+          if (item.id === 'analytics') return can(user, 'view_reports');
+          if (item.id === 'reports') return can(user, 'view_reports') || can(user, 'view_call_logs');
           if (item.id === 'call_history' || item.id === 'recordings') return can(user, 'view_call_logs');
           if (item.id === 'live_ops') return can(user, 'view_reports') || can(user, 'manage_user');
           if (item.id === 'call_queue') return can(user, 'manage_calling_settings');

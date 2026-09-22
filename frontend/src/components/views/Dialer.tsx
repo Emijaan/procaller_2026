@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, Button, Badge, Avatar, ScoreRing, Modal } from '../ui/index';
-import { api } from '../../api/client';
+import { api, apiUpload } from '../../api/client';
 import type { CallRecord, Campaign, Contact, TelephonySession } from '../../api/types';
 import { useAuth } from '../../context/AuthContext';
 import { useAgentSocket } from '../../hooks/useAgentSocket';
 import { useWebPhone } from '../../hooks/useWebPhone';
 
 type CallState = 'idle' | 'initiating' | 'ringing' | 'connected' | 'on_hold' | 'ended';
-type DialerMode = 'manual' | 'preview' | 'progressive';
+type DialerMode = 'manual' | 'preview' | 'break' | 'progressive';
 
 const LAST_DIAL_KEY = 'procaller.lastDial';
 const DIAL_CHARS = /[^0-9+*#]/g;
@@ -25,6 +25,19 @@ function pstnNumber(value: string) {
 
 function readLastDial() {
   return sanitizeDial(localStorage.getItem(LAST_DIAL_KEY) || '');
+}
+
+function clampRatio(value: number) {
+  const n = Math.round(Number(value) || 1);
+  return Math.min(32, Math.max(1, n));
+}
+
+function formatHms(total: number) {
+  const secs = Math.max(0, Math.floor(Number(total) || 0));
+  const h = String(Math.floor(secs / 3600)).padStart(2, '0');
+  const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+  const s = String(secs % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
 }
 
 const dispositions = [
@@ -85,8 +98,10 @@ function contactFromCall(call: CallRecord): Contact {
     tags: call.contact_tags || [],
     lead_score: call.contact_score || 0,
     comments: call.contact_comments,
+    extra_data: call.contact_extra_data || {},
     last_disposition: call.last_disposition,
     last_contact_at: null,
+    lead_status: call.contact_lead_status,
   };
 }
 
@@ -94,6 +109,10 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const { user } = useAuth();
   const phone = useWebPhone();
   const [mode, setMode] = useState<DialerMode>('manual');
+  const [todayTimes, setTodayTimes] = useState({ online: 0, manual: 0, preview: 0, break: 0, mode: 'offline', dial_ratio: 1 });
+  const [dialRatio, setDialRatio] = useState(1);
+  const [liveCalls, setLiveCalls] = useState<CallRecord[]>([]);
+  const [wrapLeft, setWrapLeft] = useState(0);
   const [dialNumber, setDialNumber] = useState('');
   const [callState, setCallState] = useState<CallState>('idle');
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -105,6 +124,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const [recording, setRecording] = useState(false);
   const [note, setNote] = useState('');
   const [showDisposition, setShowDisposition] = useState(false);
+  const [savingDisp, setSavingDisp] = useState(false);
+  const [wrapHold, setWrapHold] = useState(false);
   const [selectedDisposition, setSelectedDisposition] = useState('');
   const [followUpDate, setFollowUpDate] = useState('');
   const [followUpTime, setFollowUpTime] = useState('');
@@ -117,6 +138,15 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const callIdRef = useRef<number | null>(null);
   const lastCallTap = useRef(0);
   const endingRef = useRef(false);
+  const recFlushing = useRef<number | null>(null);
+  const modeRef = useRef<DialerMode>('manual');
+  const previewBusy = useRef(false);
+  const wrapDeadline = useRef(0);
+  const showDispRef = useRef(false);
+  const noLeads = useRef(false);
+  const previewTries = useRef(0);
+  const dialRatioRef = useRef(1);
+  const liveCallsRef = useRef<CallRecord[]>([]);
   const backspaceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialInputRef = useRef<HTMLInputElement | null>(null);
   const timer = useTimer(callState === 'connected' || callState === 'on_hold');
@@ -124,7 +154,6 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   useEffect(() => {
     api<Contact[]>('/api/contacts/').then((rows) => {
       setContacts(rows);
-      if (rows[0]) setCurrentContact(rows[0]);
     }).catch(() => undefined);
     api<Campaign[]>('/api/campaigns/').then((rows) => {
       setCampaigns(rows);
@@ -138,23 +167,122 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     }
   }, []);
 
+  const flushRecording = useCallback(async (id: number | null) => {
+    if (!id || recFlushing.current === id) return;
+    recFlushing.current = id;
+    try {
+      const blob = await phone.stopCallRecording();
+      if (!blob) return;
+      const form = new FormData();
+      const ext = blob.type.includes('ogg') ? 'ogg' : 'webm';
+      form.append('file', blob, `call-${id}.${ext}`);
+      await apiUpload(`/api/calls/${id}/recording/`, form);
+    } catch {
+      /* keep the call even if upload fails */
+    }
+  }, [phone]);
+
   const loadNextLead = useCallback(async () => {
     try {
       const qs = campaignId ? `?campaign=${campaignId}` : '';
-      const lead = await api<Contact>(`/api/leads/next/${qs}`);
+      const lead = await api<Contact>(`/api/leads/reserve/${qs}`, { method: 'POST', body: JSON.stringify({ campaign: campaignId || undefined }) });
       setCurrentContact(lead);
       setDialNumber(lead.phone || '');
       return lead;
     } catch (err) {
       setCurrentContact(emptyContact());
+      noLeads.current = true;
       showToast(err instanceof Error ? err.message : 'No leads available', 'info');
       return null;
     }
   }, [campaignId, showToast]);
 
+  const refreshToday = useCallback(() => {
+    api<typeof todayTimes>('/api/agent/today/').then((data) => setTodayTimes((prev) => ({ ...prev, ...data }))).catch(() => undefined);
+  }, []);
+
+  useEffect(() => { refreshToday(); const t = window.setInterval(refreshToday, 30000); return () => window.clearInterval(t); }, [refreshToday]);
+
   useEffect(() => {
-    if (mode === 'preview') loadNextLead();
-  }, [mode, campaignId, loadNextLead]);
+    noLeads.current = false;
+    previewTries.current = 0;
+    const camp = campaigns.find((c) => c.id === campaignId);
+    if (!camp) return;
+    const next = clampRatio(camp.dial_ratio || 1);
+    setDialRatio(next);
+    dialRatioRef.current = next;
+    if (modeRef.current === 'preview') {
+      api('/api/agent/mode/', { method: 'POST', body: JSON.stringify({ dial_ratio: next, campaign_id: camp.id }) }).catch(() => undefined);
+    }
+  }, [campaignId, campaigns]);
+
+  useEffect(() => {
+    if (mode !== 'manual' || callState !== 'idle' || showDisposition) return;
+    const dest = pstnNumber(dialNumber);
+    if (dest.length < 8) {
+      setCurrentContact(emptyContact(dialNumber));
+      return;
+    }
+    let cancelled = false;
+    const timerId = window.setTimeout(() => {
+      const qs = new URLSearchParams({ phone: dest });
+      if (campaignId) qs.set('campaign', String(campaignId));
+      api<Contact>(`/api/leads/lookup/?${qs.toString()}`)
+        .then((lead) => {
+          if (!cancelled) setCurrentContact(lead);
+        })
+        .catch(() => {
+          if (!cancelled) setCurrentContact(emptyContact(dialNumber));
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [dialNumber, campaignId, mode, callState, showDisposition]);
+
+  const changeRatio = async (value: number) => {
+    const next = clampRatio(value);
+    setDialRatio(next);
+    dialRatioRef.current = next;
+    try {
+      const data = await api<typeof todayTimes>('/api/agent/mode/', {
+        method: 'POST',
+        body: JSON.stringify({ dial_ratio: next, campaign_id: campaignId || undefined }),
+      });
+      setTodayTimes((prev) => ({ ...prev, ...data, dial_ratio: next }));
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not update dial ratio', 'error');
+    }
+  };
+
+  const changeMode = async (next: DialerMode) => {
+    if (next === 'progressive') return;
+    const mapped = next === 'preview' ? 'preview' : next;
+    try {
+      const data = await api<typeof todayTimes>('/api/agent/mode/', {
+        method: 'POST',
+        body: JSON.stringify({ mode: mapped, campaign_id: campaignId || undefined, dial_ratio: dialRatioRef.current }),
+      });
+      setTodayTimes((prev) => ({ ...prev, ...data }));
+      setMode(next);
+      modeRef.current = next;
+      noLeads.current = false;
+      previewTries.current = 0;
+      if (next === 'break' || next === 'manual') {
+        previewBusy.current = false;
+        if (callState === 'initiating' || callState === 'ringing') {
+          endCall();
+        }
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not change mode', 'error');
+    }
+  };
+
+  useEffect(() => {
+    api('/api/agent/mode/', { method: 'POST', body: JSON.stringify({ mode: 'manual', campaign_id: campaignId || undefined }) }).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,6 +324,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     }
     if (call.state === 'connected' || call.state === 'on_hold') {
       phone.stopRingtone();
+      phone.includeAgentInRecording();
     }
     setMuted(call.muted);
     setOnHold(call.on_hold);
@@ -204,20 +333,38 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   }, [phone]);
 
   useAgentSocket((payload) => {
-    if (payload?.call) applyCall(payload.call);
-    if (payload?.type === 'call.ringing') {
-      setCallState('ringing');
-      if (sessionRef.current?.mode !== 'asterisk') phone.playRingtone();
+    const call = payload?.call as CallRecord | undefined;
+    if (call) {
+      const rest = liveCallsRef.current.filter((row) => row.id !== call.id);
+      if (payload?.type === 'call.dropped' || call.state === 'ended') {
+        liveCallsRef.current = rest;
+        setLiveCalls(rest);
+      } else {
+        liveCallsRef.current = [...rest, call];
+        setLiveCalls(liveCallsRef.current);
+      }
     }
-    if (payload?.type === 'call.answered') {
-      setCallState('connected');
+    if (payload?.type === 'call.dropped') return;
+    if (payload?.type === 'call.ringing' && call) {
+      applyCall(call);
+      if (sessionRef.current?.mode !== 'asterisk' && dialRatioRef.current <= 1) phone.playRingtone();
+    }
+    if (payload?.type === 'call.answered' && call) {
+      applyCall(call);
       phone.stopRingtone();
+      phone.includeAgentInRecording();
       if (sessionRef.current?.mode !== 'asterisk') {
         const ice = sessionRef.current?.ice_servers || [{ urls: 'stun:stun.l.google.com:19302' }];
         phone.startLoopback(ice).catch(() => undefined);
       }
     }
     if (payload?.type === 'call.ended') {
+      const remaining = liveCallsRef.current.filter((row) => ['initiating', 'ringing', 'connected', 'on_hold'].includes(row.state));
+      if (remaining.length) {
+        const keep = remaining.find((row) => row.state === 'connected' || row.state === 'on_hold') || remaining[0];
+        applyCall(keep);
+        return;
+      }
       endingRef.current = true;
       phone.stopRingtone();
       phone.stopHoldMusic().catch(() => undefined);
@@ -227,22 +374,53 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       if (payload.call?.outcome === 'Busy') {
         showToast('Gateway returned busy (SIP 486). Check Synway ports/SIM.', 'error');
       }
-      setShowDisposition(true);
+      beginWrapUp();
     }
   }, phoneReady);
 
   useEffect(() => {
     if (callState !== 'initiating' && callState !== 'ringing') return;
     const tick = window.setInterval(() => {
-      api<{ call: CallRecord | null }>('/api/calls/active/').then((data) => {
+      api<{ call: CallRecord | null; calls?: CallRecord[] }>('/api/calls/active/').then((data) => {
+        if (data.calls?.length) {
+          liveCallsRef.current = data.calls;
+          setLiveCalls(data.calls);
+        }
         if (data.call) applyCall(data.call);
       }).catch(() => undefined);
     }, 800);
     return () => window.clearInterval(tick);
   }, [callState, applyCall]);
 
-  const startCall = async (overrideNumber?: string) => {
-    const number = sanitizeDial(overrideNumber ?? (mode === 'manual' ? dialNumber : currentContact.phone));
+  useEffect(() => {
+    if (!showDisposition && !wrapHold) return;
+    const tick = window.setInterval(() => {
+      setWrapLeft(Math.max(0, Math.ceil((wrapDeadline.current - Date.now()) / 1000)));
+    }, 250);
+    return () => window.clearInterval(tick);
+  }, [showDisposition, wrapHold]);
+
+  useEffect(() => {
+    if (mode !== 'preview' || !phoneReady || callState !== 'idle' || showDisposition || wrapHold) return;
+    if (previewBusy.current || noLeads.current || previewTries.current >= 3) return;
+    let cancelled = false;
+    previewBusy.current = true;
+    (async () => {
+      try {
+        if (!cancelled && modeRef.current === 'preview') {
+          previewTries.current = 0;
+          await startPreviewBatch();
+        }
+      } finally {
+        previewBusy.current = false;
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [mode, phoneReady, callState, showDisposition, wrapHold, campaignId, loadNextLead]);
+
+  const startCall = async (overrideNumber?: string, contactOverride?: Contact) => {
+    const lead = contactOverride || currentContact;
+    const number = sanitizeDial(overrideNumber ?? (mode === 'manual' ? dialNumber : lead.phone));
     if (!number) {
       showToast('Enter a number to dial', 'error');
       return;
@@ -250,7 +428,10 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     if (mode === 'manual') setDialNumber(number);
     localStorage.setItem(LAST_DIAL_KEY, number);
     setCallState('initiating');
+    endingRef.current = true;
+    phone.hangupCall();
     endingRef.current = false;
+    recFlushing.current = null;
     const isAsterisk = sessionRef.current?.mode === 'asterisk' && !!sessionRef.current.sip;
     if (!isAsterisk) phone.playRingtone();
     try {
@@ -259,14 +440,16 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
         method: 'POST',
         body: JSON.stringify({
           phone_number: dest,
-          contact_id: mode !== 'manual' && currentContact.id ? currentContact.id : undefined,
+          contact_id: lead.id || undefined,
           campaign_id: campaignId || undefined,
           client_dial: isAsterisk,
+          preview: mode === 'preview',
         }),
       });
       applyCall(call);
       if (isAsterisk && sessionRef.current?.sip) {
         await phone.placeCall(sessionRef.current.sip, dest, {
+          extraHeaders: [`X-ProCaller-Call-Id: ${call.id}`],
           onProgress: () => {
             setCallState('ringing');
             api(`/api/calls/${call.id}/ringing/`, { method: 'POST' }).catch(() => undefined);
@@ -279,21 +462,66 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             if (endingRef.current) return;
             endingRef.current = true;
             api(`/api/calls/${call.id}/hangup/`, { method: 'POST' }).catch(() => undefined);
+            flushRecording(call.id).catch(() => undefined);
             setCallState('ended');
-            setShowDisposition(true);
+            beginWrapUp();
           },
         });
       }
       showToast(`Calling ${call.customer}...`, 'info');
     } catch (err) {
       phone.stopRingtone();
-      phone.hangupCall();
       const liveId = callIdRef.current;
+      phone.hangupCall();
+      flushRecording(liveId).catch(() => undefined);
       if (liveId) {
         api(`/api/calls/${liveId}/hangup/`, { method: 'POST' }).catch(() => undefined);
       }
       setCallState('idle');
+      if (modeRef.current === 'preview') previewTries.current += 1;
       showToast(err instanceof Error ? err.message : 'Dial failed', 'error');
+    }
+  };
+
+  const startPreviewBatch = async () => {
+    const ratio = clampRatio(dialRatioRef.current);
+    if (ratio <= 1) {
+      const lead = await loadNextLead();
+      if (lead?.phone && modeRef.current === 'preview') {
+        await startCall(lead.phone, lead);
+      } else {
+        previewTries.current = 3;
+        noLeads.current = true;
+      }
+      return;
+    }
+    setCallState('initiating');
+    endingRef.current = false;
+    try {
+      const data = await api<{ calls: CallRecord[]; conference: string; ratio: number }>('/api/calls/preview-batch/', {
+        method: 'POST',
+        body: JSON.stringify({ campaign_id: campaignId || undefined, ratio }),
+      });
+      liveCallsRef.current = data.calls || [];
+      setLiveCalls(liveCallsRef.current);
+      if (data.calls?.[0]) applyCall(data.calls[0]);
+      const isAsterisk = sessionRef.current?.mode === 'asterisk' && !!sessionRef.current.sip;
+      if (isAsterisk && data.conference && sessionRef.current?.sip) {
+        await phone.placeCall(sessionRef.current.sip, data.conference, {
+          onHangup: () => {
+            if (liveCallsRef.current.some((row) => ['initiating', 'ringing', 'connected', 'on_hold'].includes(row.state))) return;
+            if (endingRef.current) return;
+            endingRef.current = true;
+            setCallState('ended');
+            beginWrapUp();
+          },
+        });
+      }
+      showToast(`Dialing ${data.calls.length} numbers (ratio ${data.ratio})`, 'info');
+    } catch (err) {
+      setCallState('idle');
+      previewTries.current += 1;
+      showToast(err instanceof Error ? err.message : 'Auto-dial failed', 'error');
     }
   };
 
@@ -340,49 +568,46 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   };
 
   const endCall = async () => {
-    const id = callIdRef.current;
+    const ids = Array.from(new Set([callIdRef.current, ...liveCallsRef.current.map((row) => row.id)].filter(Boolean))) as number[];
     endingRef.current = true;
     phone.stopRingtone();
     phone.stopHoldMusic().catch(() => undefined);
     phone.stopLoopback();
     phone.hangupCall();
-    if (id) {
+    ids.forEach((id) => flushRecording(id).catch(() => undefined));
+    if (ids.length) {
       try {
-        const call = await api<CallRecord>(`/api/calls/${id}/hangup/`, { method: 'POST' });
-        applyCall(call);
+        const results = await Promise.all(ids.map((id) => api<CallRecord>(`/api/calls/${id}/hangup/`, { method: 'POST' }).catch(() => null)));
+        const primary = results.find((row) => row && (row.state === 'ended' || row.answered_at)) || results.find(Boolean);
+        if (primary) applyCall(primary);
+        else setCallState('ended');
       } catch {
         setCallState('ended');
       }
     } else {
       setCallState('ended');
     }
-    setShowDisposition(true);
+    liveCallsRef.current = [];
+    setLiveCalls([]);
+    beginWrapUp();
   };
 
-  const saveDisposition = async () => {
-    const id = callIdRef.current;
-    if (id && selectedDisposition) {
-      let follow_up_at = '';
-      if (followUpDate) follow_up_at = followUpTime ? `${followUpDate}T${followUpTime}:00` : `${followUpDate}T10:00:00`;
-      try {
-        await api(`/api/calls/${id}/disposition/`, {
-          method: 'POST',
-          body: JSON.stringify({
-            disposition: selectedDisposition,
-            notes: note,
-            follow_up_at: follow_up_at || undefined,
-          }),
-        });
-      } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Could not save disposition', 'error');
-        return;
-      }
-    }
-    showToast('Call disposition saved.', 'success');
+  const beginWrapUp = () => {
+    showDispRef.current = true;
+    setShowDisposition(true);
+    if (wrapDeadline.current > Date.now()) return;
+    const camp = campaigns.find((c) => c.id === campaignId);
+    wrapDeadline.current = Date.now() + Math.max(0, camp?.wrap_up_seconds ?? 30) * 1000;
+    setWrapLeft(camp?.wrap_up_seconds ?? 30);
+  };
+
+  const finishDisposition = async () => {
     setShowDisposition(false);
-    setCallState('idle');
+    showDispRef.current = false;
     setActiveCall(null);
     callIdRef.current = null;
+    liveCallsRef.current = [];
+    setLiveCalls([]);
     setMuted(false);
     setOnHold(false);
     setNote('');
@@ -390,12 +615,57 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     setFollowUpDate('');
     setFollowUpTime('');
     setDtmf('');
-    if (mode === 'preview') {
-      await loadNextLead();
-    } else {
+    setSavingDisp(false);
+    const wait = modeRef.current === 'preview' ? Math.max(0, wrapDeadline.current - Date.now()) : 0;
+    if (wait) {
+      setWrapHold(true);
+      await new Promise((resolve) => window.setTimeout(resolve, wait));
+      setWrapHold(false);
+    }
+    wrapDeadline.current = 0;
+    setWrapLeft(0);
+    setCallState('idle');
+    refreshToday();
+    if (modeRef.current !== 'preview') {
       const idx = contacts.findIndex((c) => c.id === currentContact.id);
       if (idx >= 0 && contacts[idx + 1]) setCurrentContact(contacts[idx + 1]);
     }
+  };
+
+  const skipDisposition = () => {
+    if (modeRef.current === 'preview' && wrapDeadline.current > Date.now()) {
+      showToast(`Wrap-up ${Math.max(1, Math.ceil((wrapDeadline.current - Date.now()) / 1000))}s remaining. Save an outcome or wait.`, 'info');
+      return;
+    }
+    api('/api/leads/release/', { method: 'POST' }).catch(() => undefined);
+    finishDisposition();
+  };
+
+  const saveDisposition = async (label?: string) => {
+    const chosen = (label || selectedDisposition).trim();
+    if (!chosen || savingDisp) return;
+    setSavingDisp(true);
+    const id = callIdRef.current;
+    if (id) {
+      let follow_up_at = '';
+      if (followUpDate) follow_up_at = followUpTime ? `${followUpDate}T${followUpTime}:00` : `${followUpDate}T10:00:00`;
+      try {
+        await api(`/api/calls/${id}/disposition/`, {
+          method: 'POST',
+          body: JSON.stringify({
+            disposition: chosen,
+            notes: note,
+            follow_up_at: follow_up_at || undefined,
+          }),
+        });
+      } catch (err) {
+        setSavingDisp(false);
+        showToast(err instanceof Error ? err.message : 'Could not save disposition', 'error');
+        return;
+      }
+    }
+    showToast('Call disposition saved.', 'success');
+    await finishDisposition();
   };
 
   const toggleMute = async () => {
@@ -484,14 +754,13 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     <div className="flex-1 overflow-hidden bg-[#F8FAFC] fade-in flex flex-col">
       <div className="border-b border-[#E2E8F0] bg-white px-6 py-3 flex items-center gap-4 shrink-0">
         <div className="flex items-center gap-1.5 bg-slate-100 rounded-lg p-1">
-          {(['manual', 'preview', 'progressive'] as DialerMode[]).map((m) => (
+          {(['manual', 'preview', 'break'] as DialerMode[]).map((m) => (
             <button
               key={m}
-              onClick={() => setMode(m)}
-              disabled={m === 'progressive'}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize transition-all ${mode === m ? 'bg-white shadow-sm text-[#4F46E5]' : 'text-slate-500 hover:text-slate-700'} disabled:opacity-40`}
+              onClick={() => changeMode(m)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold capitalize transition-all ${mode === m ? 'bg-white shadow-sm text-[#4F46E5]' : 'text-slate-500 hover:text-slate-700'}`}
             >
-              {m}
+              {m === 'preview' ? 'Preview Auto' : m}
             </button>
           ))}
         </div>
@@ -505,7 +774,27 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
+        {mode === 'preview' && (
+          <label className="flex items-center gap-2 text-sm text-slate-500">
+            <span>Ratio</span>
+            <input
+              type="number"
+              min={1}
+              max={32}
+              value={dialRatio}
+              onChange={(e) => changeRatio(Number(e.target.value))}
+              className="w-16 h-8 rounded-lg border border-[#E2E8F0] px-2 text-sm font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30"
+            />
+            <span className="text-[10px] text-slate-400">1–32 lines</span>
+          </label>
+        )}
         <div className="ml-auto flex items-center gap-3">
+          <span className={`text-[10px] font-semibold uppercase tracking-wide ${mode === 'preview' ? 'text-indigo-600' : mode === 'break' ? 'text-orange-600' : 'text-slate-500'}`}>
+            {mode === 'preview' ? '● Preview Auto' : mode === 'break' ? '● Break' : '● Manual'}
+          </span>
+          <span className="text-[10px] text-slate-400 font-mono">
+            Online {formatHms(todayTimes.online)} · Manual {formatHms(todayTimes.manual)} · Preview {formatHms(todayTimes.preview)} · Break {formatHms(todayTimes.break)}
+          </span>
           <span className={`text-xs font-medium ${phoneReady ? 'text-green-600' : 'text-amber-600'}`}>
             {phoneReady ? `WebRTC ${phoneMode} · ext ${user?.extension || '—'}` : 'Connecting phone...'}
           </span>
@@ -517,7 +806,9 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
           <div className="p-4 border-b border-[#E2E8F0]">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Current Lead</h3>
-              <Badge variant={mode === 'manual' ? 'info' : 'success'} dot>{mode === 'manual' ? 'Manual' : 'Preview'}</Badge>
+              <Badge variant={currentContact.id ? 'success' : (mode === 'manual' ? 'info' : 'success')} dot>
+                {mode === 'manual' ? (currentContact.id ? 'Campaign lead' : 'Manual') : 'Preview'}
+              </Badge>
             </div>
             <div className="flex items-center gap-3 mb-4">
               <Avatar initials={initials} size="lg" />
@@ -597,11 +888,28 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
         </div>
 
         <div className="flex-1 flex flex-col items-center justify-center bg-[#F8FAFC] p-8">
-          {callState === 'idle' && (
+          {callState === 'idle' && mode === 'break' && (
+            <div className="w-full max-w-sm text-center">
+              <Card className="p-8">
+                <p className="text-sm font-semibold text-orange-700">On Break</p>
+                <p className="text-xs text-slate-500 mt-2">Preview Auto is paused. Switch to Manual or Preview Auto to resume.</p>
+              </Card>
+            </div>
+          )}
+          {(wrapHold || (callState === 'ended' && !showDisposition)) && (
+            <div className="w-full max-w-sm text-center">
+              <Card className="p-8">
+                <p className="text-sm font-semibold text-indigo-700">Wrap-up</p>
+                <p className="font-mono text-4xl font-bold text-slate-900 mt-3">{wrapLeft}s</p>
+                <p className="text-xs text-slate-500 mt-2">Next lead starts when wrap-up completes.</p>
+              </Card>
+            </div>
+          )}
+          {callState === 'idle' && mode !== 'break' && (
             <div className="w-full max-w-sm">
               <Card className="p-6">
                 <h3 className="text-sm font-semibold text-slate-700 mb-4 text-center">
-                  {mode === 'manual' ? 'Enter Number' : 'Preview Mode'}
+                  {mode === 'manual' ? 'Enter Number' : 'Preview Auto'}
                 </h3>
                 <div className="bg-slate-50 rounded-xl px-4 py-3 mb-4 text-center">
                   {mode === 'manual' ? (
@@ -643,7 +951,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
                     type="button"
                     title="Call · double-tap to redial last number"
                     onClick={handleCallButton}
-                    disabled={!phoneReady}
+                    disabled={!phoneReady || mode === 'preview'}
                     className="flex-1 h-12 rounded-xl bg-green-500 hover:bg-green-600 active:bg-green-700 text-white font-semibold transition-all flex items-center justify-center gap-2 shadow-lg shadow-green-200 disabled:opacity-50"
                   >
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -681,8 +989,18 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
               <h2 className="text-2xl font-bold text-slate-900 mb-1">{displayName}</h2>
               <p className="text-slate-500 mb-1 font-mono tracking-wide">{displayPhone}</p>
               <p className="text-lg font-medium text-[#4F46E5] animate-calling">
-                {callState === 'initiating' ? 'Calling...' : 'Ringing...'}
+                {callState === 'initiating' ? `Calling${liveCalls.length > 1 ? ` ${liveCalls.length} lines` : ''}...` : `Ringing${liveCalls.length > 1 ? ` ${liveCalls.length} lines` : ''}...`}
               </p>
+              {liveCalls.length > 1 && (
+                <div className="mt-4 space-y-1 max-w-sm mx-auto text-left">
+                  {liveCalls.map((row) => (
+                    <div key={row.id} className="flex items-center justify-between bg-white border border-[#E2E8F0] rounded-lg px-3 py-2 text-sm">
+                      <span className="font-mono text-slate-700">{row.phone_number}</span>
+                      <span className="text-xs text-slate-400 capitalize">{row.state.replace('_', ' ')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <button onClick={endCall} className="mt-8 w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center mx-auto shadow-lg shadow-red-200 transition-all">
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M5 3a2 2 0 00-2 2v1c0 8.284 6.716 15 15 15h1a2 2 0 002-2v-3.28a1 1 0 00-.684-.948l-4.493-1.498a1 1 0 00-1.21.502l-1.13 2.257a11.042 11.042 0 01-5.516-5.517l2.257-1.128a1 1 0 00.502-1.21L9.228 3.683A1 1 0 008.279 3H5z" />
@@ -773,20 +1091,24 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
         </div>
       </div>
 
-      <Modal open={showDisposition} onClose={() => {}} title="Call Disposition" size="md">
+      <Modal open={showDisposition} onClose={skipDisposition} title="Call Disposition" size="md">
         <div className="space-y-4">
           <div className="bg-slate-50 rounded-xl p-4 text-center">
-            <p className="text-xs text-slate-500 mb-1">Call Duration</p>
+            <p className="text-xs text-slate-500 mb-1">Wrap-up {wrapLeft > 0 ? `· ${wrapLeft}s` : 'complete'}</p>
             <p className="text-2xl font-bold font-mono text-slate-900">{activeCall?.duration || timer}</p>
             <p className="text-xs text-slate-400 mt-1">{displayName} · {displayPhone}</p>
           </div>
           <div>
-            <p className="text-sm font-semibold text-slate-700 mb-2">Outcome</p>
+            <p className="text-sm font-semibold text-slate-700 mb-2">Outcome · tap twice to save</p>
             <div className="grid grid-cols-2 gap-2">
               {dispositions.map((d) => (
                 <button
                   key={d.key}
-                  onClick={() => setSelectedDisposition(d.label)}
+                  disabled={savingDisp}
+                  onClick={() => {
+                    if (selectedDisposition === d.label) saveDisposition(d.label);
+                    else setSelectedDisposition(d.label);
+                  }}
                   className={`flex items-center gap-2.5 p-3 rounded-xl border text-sm font-medium transition-all text-left ${selectedDisposition === d.label ? 'border-[#4F46E5] bg-[#EEF2FF] text-[#4F46E5]' : 'border-[#E2E8F0] text-slate-700 hover:border-[#C7D2FE]'}`}
                 >
                   <kbd className="w-5 h-5 flex items-center justify-center bg-slate-100 text-slate-400 rounded text-[10px] font-mono shrink-0">{d.key}</kbd>
@@ -806,11 +1128,11 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             <input type="time" value={followUpTime} onChange={(e) => setFollowUpTime(e.target.value)} className="flex-1 h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30" />
           </div>
           <div className="flex gap-2 pt-1">
-            <Button variant="outline" size="md" className="flex-1" onClick={() => { setShowDisposition(false); setCallState('idle'); setActiveCall(null); callIdRef.current = null; }}>
+            <Button variant="outline" size="md" className="flex-1" disabled={(mode === 'preview' && wrapLeft > 0) || savingDisp} onClick={skipDisposition}>
               Skip
             </Button>
-            <Button variant="primary" size="md" className="flex-1" onClick={saveDisposition} disabled={!selectedDisposition}>
-              Save & Next Lead →
+            <Button variant="primary" size="md" className="flex-1" onClick={() => saveDisposition()} disabled={!selectedDisposition || savingDisp}>
+              {savingDisp ? 'Saving...' : 'Save & Next Lead →'}
             </Button>
           </div>
         </div>

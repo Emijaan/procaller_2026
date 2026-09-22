@@ -39,6 +39,9 @@ class CampaignListCreateView(APIView):
             dial_method=request.data.get("dial_method") or Campaign.DialMethod.MANUAL,
             caller_id=request.data.get("caller_id") or "",
             caller_id_name=request.data.get("caller_id_name") or "ProCaller",
+            code=request.data.get("code") or "",
+            wrap_up_seconds=int(request.data.get("wrap_up_seconds") or 30),
+            dial_ratio=max(1, min(32, int(request.data.get("dial_ratio") or 1))),
             agency=agency_of(request.user),
             created_by=request.user,
             admin=request.user if request.user.normalized_role == User.Role.ADMIN else None,
@@ -65,9 +68,14 @@ class CampaignDetailView(APIView):
         camp = _scope(request).filter(pk=pk).first()
         if not camp:
             return Response({"detail": "Not found"}, status=404)
-        for field in ("name", "description", "status", "dial_method", "caller_id", "caller_id_name", "active"):
+        for field in ("name", "description", "status", "dial_method", "caller_id", "caller_id_name", "active", "code", "wrap_up_seconds", "dial_ratio"):
             if field in request.data:
-                setattr(camp, field, request.data[field])
+                value = request.data[field]
+                if field == "wrap_up_seconds":
+                    value = max(0, int(value or 30))
+                if field == "dial_ratio":
+                    value = max(1, min(32, int(value or 1)))
+                setattr(camp, field, value)
         if "status" in request.data:
             camp.active = request.data["status"] in (Campaign.Status.ACTIVE, Campaign.Status.RUNNING)
         camp.save()

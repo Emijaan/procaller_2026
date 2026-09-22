@@ -57,6 +57,9 @@ export interface Campaign {
   assigned_count?: number;
   has_hold_audio?: boolean;
   hold_audio_name?: string;
+  wrap_up_seconds?: number;
+  dial_ratio?: number;
+  code?: string;
 }
 
 export interface Contact {
@@ -96,6 +99,8 @@ export interface CallRecord {
   contact_score: number;
   contact_status: string;
   contact_comments: string;
+  contact_extra_data?: Record<string, string>;
+  contact_lead_status?: string;
   last_disposition: string;
   initials: string;
   direction: string;
@@ -107,7 +112,15 @@ export interface CallRecord {
   muted: boolean;
   on_hold: boolean;
   recording: boolean;
-  media_mode: string;
+  has_recording?: boolean;
+  recording_bytes?: number;
+  agency_id?: number | null;
+  agency_name?: string;
+  user_name?: string;
+  hangup_cause?: string;
+  hold_seconds?: number;
+  wrap_up_seconds?: number;
+  dial_batch?: string;
   duration: string;
   duration_seconds: number;
   date: string;

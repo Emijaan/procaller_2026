@@ -113,6 +113,7 @@ def watch_gateway(call_id, number):
         dest = normalize_phone(number or "")
         needle = dest[-10:] if dest else ""
         saw_gateway = False
+        misses = 0
         for _ in range(150):
             time.sleep(0.7)
             call = Call.objects.filter(pk=call_id).first()
@@ -133,19 +134,24 @@ def watch_gateway(call_id, number):
                 if not needle or needle in blob:
                     match = channel
                     break
-            if not match and len(gateways) == 1:
-                match = gateways[0]
             if not match:
-                if saw_gateway and call.answered_at:
-                    hangup_call(call)
-                    return
+                if saw_gateway:
+                    misses += 1
+                    if misses >= 3:
+                        outcome = "" if call.answered_at else call.Outcome.NO_ANSWER
+                        hangup_call(call, outcome=outcome)
+                        return
                 continue
+            misses = 0
             saw_gateway = True
             state = (match.get("state") or "").lower()
             if state in {"ring", "ringing"} and call.state in {Call.State.INITIATING, Call.State.RINGING}:
                 mark_ringing(call)
             elif state == "up" and not call.answered_at:
                 mark_answered(call)
+        leftover = Call.objects.filter(pk=call_id).first()
+        if leftover and leftover.state != leftover.State.ENDED:
+            hangup_call(leftover, outcome="" if leftover.answered_at else leftover.Outcome.NO_ANSWER)
 
     threading.Thread(target=_run, daemon=True).start()
 

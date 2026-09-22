@@ -15,7 +15,7 @@ export default function CallHistory({ onViewRecording }: { onViewRecording: () =
 
   useEffect(() => {
     api<CallRecord[]>('/api/calls/').then((calls) => {
-      setRows(calls.map((c) => ({ ...c, agent: c.agent_name, hasRecording: false })));
+      setRows(calls.map((c) => ({ ...c, agent: c.agent_name, hasRecording: !!c.has_recording })));
     }).catch(() => undefined);
   }, []);
 

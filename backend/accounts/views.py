@@ -234,6 +234,9 @@ class DashboardView(APIView):
                 calls = calls.filter(agent=request.user)
                 leads = leads.filter(owner=request.user)
         usage = usage_for_agency(agency_of(request.user)) if agency_of(request.user) else None
+        from telephony.models import AgentModeSession
+
+        open_modes = AgentModeSession.objects.filter(ended_at__isnull=True, user_id__in=users.values("id"))
         return Response(
             {
                 "role": role_of(request.user),
@@ -249,6 +252,10 @@ class DashboardView(APIView):
                 "calls": calls.count(),
                 "connected_calls": calls.filter(outcome="Connected").count(),
                 "callbacks": leads.filter(lead_status="callback").count(),
+                "online_agents": open_modes.exclude(mode="offline").count(),
+                "preview_agents": open_modes.filter(mode="preview").count(),
+                "manual_agents": open_modes.filter(mode="manual").count(),
+                "break_agents": open_modes.filter(mode="break").count(),
                 "usage": usage,
             }
         )

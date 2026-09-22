@@ -35,7 +35,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
   const [agents, setAgents] = useState<User[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [step, setStep] = useState(1);
-  const [draft, setDraft] = useState({ name: '', description: '', dial_method: 'preview' });
+  const [draft, setDraft] = useState({ name: '', description: '', dial_method: 'preview', code: '', wrap_up_seconds: '30', dial_ratio: '1' });
   const [createdId, setCreatedId] = useState<number | null>(null);
   const [assigned, setAssigned] = useState<number[]>([]);
   const [preview, setPreview] = useState<Preview>(null);
@@ -86,13 +86,21 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
     setPendingFile(null);
     setImportResult('');
     setAssigned([]);
-    setDraft({ name: '', description: '', dial_method: 'preview' });
+    setDraft({ name: '', description: '', dial_method: 'preview', code: '', wrap_up_seconds: '30', dial_ratio: '1' });
   };
 
   const createCampaign = async () => {
     const camp = await api<Campaign>('/api/campaigns/', {
       method: 'POST',
-      body: JSON.stringify({ ...draft, status: 'draft' }),
+      body: JSON.stringify({
+        name: draft.name,
+        description: draft.description,
+        dial_method: draft.dial_method,
+        code: draft.code,
+        wrap_up_seconds: Number(draft.wrap_up_seconds) || 30,
+        dial_ratio: Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1)),
+        status: 'draft',
+      }),
     });
     setCreatedId(camp.id);
     return camp;
@@ -184,7 +192,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <h3 className="font-semibold text-slate-900 text-base">{camp.name}</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">{camp.dial_method} · {camp.lead_count || 0} leads</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{camp.dial_method} · wrap {camp.wrap_up_seconds ?? 30}s · ratio {camp.dial_ratio ?? 1} · {camp.lead_count || 0} leads</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={statusVariant(camp.status)} dot={camp.status === 'running' || camp.status === 'active'}>{prettyStatus(camp.status)}</Badge>
@@ -270,6 +278,10 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   <input className="w-full h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30" placeholder="e.g. September Collection" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Campaign Code</label>
+                  <input className="w-full h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30" placeholder="e.g. DEL-REC" value={draft.code} onChange={(e) => setDraft({ ...draft, code: e.target.value })} />
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">Description</label>
                   <textarea className="w-full h-20 rounded-lg border border-[#E2E8F0] px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30" placeholder="What is this campaign about?" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
                 </div>
@@ -329,7 +341,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               <h3 className="text-sm font-semibold text-slate-700">Dialing Strategy</h3>
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { id: 'preview', label: 'Preview', desc: 'Agent reviews lead before calling' },
+                  { id: 'preview', label: 'Preview Auto', desc: 'System reserves the next lead and dials automatically' },
                   { id: 'manual', label: 'Manual', desc: 'Agent manually initiates each call' },
                   { id: 'progressive', label: 'Progressive', desc: 'Coming later — not enabled yet' },
                   { id: 'power', label: 'Power', desc: 'Coming later — not enabled yet' },
@@ -351,6 +363,16 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   </label>
                 ))}
               </div>
+              <div className="flex gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Wrap-up seconds after hangup</label>
+                  <input type="number" min={0} className="w-32 h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none" value={draft.wrap_up_seconds} onChange={(e) => setDraft({ ...draft, wrap_up_seconds: e.target.value })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Dial ratio (1–32)</label>
+                  <input type="number" min={1} max={32} className="w-32 h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none" value={draft.dial_ratio} onChange={(e) => setDraft({ ...draft, dial_ratio: e.target.value })} />
+                </div>
+              </div>
             </div>
           )}
 
@@ -371,7 +393,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               ) : (
                 <div className="bg-green-50 border border-green-100 rounded-xl p-4 text-center">
                   <div className="text-3xl mb-2">🚀</div>
-                  <p className="text-sm font-semibold text-green-800">{draft.name || 'Campaign'} · {draft.dial_method}</p>
+                  <p className="text-sm font-semibold text-green-800">{draft.name || 'Campaign'} · {draft.dial_method} · ratio {draft.dial_ratio}</p>
                   <p className="text-xs text-green-600 mt-1">{importResult || 'Launch when you are ready'}</p>
                 </div>
               )}
@@ -392,12 +414,12 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                     await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ assigned_users: assigned }) });
                   }
                   if (step === 4) {
-                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ dial_method: draft.dial_method }) });
+                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ dial_method: draft.dial_method, wrap_up_seconds: Number(draft.wrap_up_seconds) || 30, dial_ratio: Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1)), code: draft.code }) });
                   }
                   if (step < totalSteps) {
                     setStep((p) => p + 1);
                   } else {
-                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ status: 'active', dial_method: draft.dial_method, assigned_users: assigned }) });
+                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ status: 'active', dial_method: draft.dial_method, assigned_users: assigned, wrap_up_seconds: Number(draft.wrap_up_seconds) || 30, dial_ratio: Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1)), code: draft.code }) });
                     showToast('Campaign saved', 'success');
                     resetWizard();
                     load();

@@ -126,6 +126,28 @@ def scoped_calls(user, qs):
     return qs.filter(agent=user)
 
 
+def scoped_recordings(user, qs):
+    if is_super_admin(user):
+        return qs
+    org = agency_of(user)
+    if not org:
+        return qs.filter(agent=user)
+    qs = qs.filter(Q(agent__organization=org) | Q(campaign__agency=org))
+    role = role_of(user)
+    if role == User.Role.AGENCY:
+        return qs
+    tree = descendant_ids(user)
+    if role == User.Role.MANAGER:
+        return qs.filter(
+            Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__manager=user) | Q(campaign__assigned_users=user)
+        ).distinct()
+    if role == User.Role.ADMIN:
+        return qs.filter(
+            Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__admin=user) | Q(campaign__assigned_users=user)
+        ).distinct()
+    return qs.filter(agent=user)
+
+
 def require_perm(user, code):
     from rest_framework.exceptions import PermissionDenied
 

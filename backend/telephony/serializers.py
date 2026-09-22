@@ -16,10 +16,17 @@ class CallSerializer(serializers.ModelSerializer):
     contact_status = serializers.SerializerMethodField()
     contact_comments = serializers.SerializerMethodField()
     last_disposition = serializers.SerializerMethodField()
+    contact_extra_data = serializers.SerializerMethodField()
+    contact_lead_status = serializers.SerializerMethodField()
     initials = serializers.SerializerMethodField()
     duration = serializers.SerializerMethodField()
     date = serializers.DateTimeField(source="started_at", read_only=True)
     status = serializers.SerializerMethodField()
+    has_recording = serializers.SerializerMethodField()
+    agency_id = serializers.SerializerMethodField()
+    agency_name = serializers.SerializerMethodField()
+    user_name = serializers.CharField(source="agent.display_name", read_only=True)
+    wrap_up_seconds = serializers.SerializerMethodField()
 
     class Meta:
         model = Call
@@ -38,6 +45,8 @@ class CallSerializer(serializers.ModelSerializer):
             "contact_score",
             "contact_status",
             "contact_comments",
+            "contact_extra_data",
+            "contact_lead_status",
             "last_disposition",
             "initials",
             "direction",
@@ -49,7 +58,17 @@ class CallSerializer(serializers.ModelSerializer):
             "muted",
             "on_hold",
             "recording",
+            "has_recording",
+            "recording_bytes",
+            "agency_id",
+            "agency_name",
+            "user_name",
+            "campaign_id",
             "media_mode",
+            "hangup_cause",
+            "hold_seconds",
+            "dial_batch",
+            "wrap_up_seconds",
             "duration",
             "duration_seconds",
             "date",
@@ -96,6 +115,14 @@ class CallSerializer(serializers.ModelSerializer):
         contact = self._contact(obj)
         return contact.comments if contact else ""
 
+    def get_contact_extra_data(self, obj):
+        contact = self._contact(obj)
+        return contact.extra_data if contact and isinstance(contact.extra_data, dict) else {}
+
+    def get_contact_lead_status(self, obj):
+        contact = self._contact(obj)
+        return contact.lead_status if contact else ""
+
     def get_last_disposition(self, obj):
         contact = self._contact(obj)
         return contact.last_disposition if contact else ""
@@ -110,6 +137,26 @@ class CallSerializer(serializers.ModelSerializer):
         if obj.state != Call.State.ENDED:
             return obj.get_state_display()
         return obj.outcome or "Ended"
+
+    def get_has_recording(self, obj):
+        return bool(obj.recording_file)
+
+    def get_agency_id(self, obj):
+        if obj.campaign_id and obj.campaign and obj.campaign.agency_id:
+            return obj.campaign.agency_id
+        org = getattr(obj.agent, "organization_id", None)
+        return org
+
+    def get_agency_name(self, obj):
+        if obj.campaign_id and obj.campaign and obj.campaign.agency:
+            return obj.campaign.agency.name
+        org = getattr(obj.agent, "organization", None)
+        return org.name if org else ""
+
+    def get_wrap_up_seconds(self, obj):
+        if obj.campaign_id and obj.campaign:
+            return obj.campaign.wrap_up_seconds or 30
+        return 30
 
 
 class AgentSessionSerializer(serializers.ModelSerializer):

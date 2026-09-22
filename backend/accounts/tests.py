@@ -59,3 +59,46 @@ class TenantIsolationTests(TestCase):
         client = self._login("a@test.com")
         res = client.get(f"/api/campaigns/{self.camp_b.id}/")
         self.assertEqual(res.status_code, 404)
+
+    def test_recordings_are_agency_scoped(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from telephony.models import Call
+
+        call_a = Call.objects.create(
+            agent=self.agency_a,
+            campaign=self.camp_a,
+            phone_number="9000000001",
+            callerid_token="rec-a",
+            recording=True,
+        )
+        call_a.recording_file.save("a.webm", SimpleUploadedFile("a.webm", b"RIFF" + b"0" * 64), save=True)
+        call_b = Call.objects.create(
+            agent=self.agency_b,
+            campaign=self.camp_b,
+            phone_number="9000000002",
+            callerid_token="rec-b",
+            recording=True,
+        )
+        call_b.recording_file.save("b.webm", SimpleUploadedFile("b.webm", b"RIFF" + b"1" * 64), save=True)
+
+        agency_client = self._login("a@test.com")
+        listed = agency_client.get("/api/recordings/")
+        ids = [row["id"] for row in listed.data["results"]]
+        self.assertIn(call_a.id, ids)
+        self.assertNotIn(call_b.id, ids)
+        self.assertEqual(listed.data["results"][0]["phone_number"], "9000000001")
+        self.assertEqual(listed.data["results"][0]["campaign_name"], "A Camp")
+        self.assertEqual(listed.data["results"][0]["agency_name"], "Agency A")
+        self.assertEqual(listed.data["results"][0]["user_name"], self.agency_a.display_name)
+        self.assertEqual(listed.data["results"][0]["campaign_id"], self.camp_a.id)
+
+        other = agency_client.get(f"/api/recordings/{call_b.id}/file/")
+        self.assertEqual(other.status_code, 404)
+        own = agency_client.get(f"/api/recordings/{call_a.id}/file/")
+        self.assertEqual(own.status_code, 200)
+
+        root = self._login("root@test.com")
+        all_rows = root.get("/api/recordings/")
+        all_ids = [row["id"] for row in all_rows.data["results"]]
+        self.assertIn(call_a.id, all_ids)
+        self.assertIn(call_b.id, all_ids)

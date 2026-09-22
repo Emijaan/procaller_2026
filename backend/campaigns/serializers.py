@@ -46,6 +46,9 @@ class CampaignSerializer(serializers.ModelSerializer):
             "lead_count",
             "has_hold_audio",
             "hold_audio_name",
+            "code",
+            "wrap_up_seconds",
+            "dial_ratio",
             "created_at",
             "updated_at",
         )

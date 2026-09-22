@@ -11,6 +11,7 @@ type SipBundle = {
 };
 
 export type CallListeners = {
+  extraHeaders?: string[];
   onProgress?: () => void;
   onAccept?: () => void;
   onHangup?: () => void;
@@ -73,9 +74,112 @@ function attachRemote(session: Inviter) {
     el.volume = 1;
     el.srcObject = stream;
     el.play().catch(() => undefined);
+    feedRecorder(session);
   };
-  pc.ontrack = () => pump();
+  if (!(pc as RTCPeerConnection & { _procallerRemote?: boolean })._procallerRemote) {
+    (pc as RTCPeerConnection & { _procallerRemote?: boolean })._procallerRemote = true;
+    pc.addEventListener('track', () => pump());
+  }
   pump();
+}
+
+type RecMix = {
+  ctx: AudioContext | null;
+  dest: MediaStreamAudioDestinationNode | null;
+  recorder: MediaRecorder | null;
+  chunks: Blob[];
+  localNode: MediaStreamAudioSourceNode | null;
+  remoteNode: MediaStreamAudioSourceNode | null;
+  remoteId: string;
+};
+
+let recMix: RecMix = { ctx: null, dest: null, recorder: null, chunks: [], localNode: null, remoteNode: null, remoteId: '' };
+
+function pickRecorderMime() {
+  const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+  return types.find((t) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) || '';
+}
+
+function feedRecorder(session: Inviter) {
+  if (!recMix.ctx || !recMix.dest) return;
+  const handler = session.sessionDescriptionHandler as { peerConnection?: RTCPeerConnection } | undefined;
+  const pc = handler?.peerConnection;
+  if (!pc) return;
+  const remote = new MediaStream();
+  pc.getReceivers().forEach((receiver) => {
+    if (receiver.track && receiver.track.kind === 'audio' && receiver.track.readyState !== 'ended') {
+      remote.addTrack(receiver.track);
+    }
+  });
+  const id = remote.getAudioTracks().map((t) => t.id).join(',');
+  if (!id || id === recMix.remoteId) return;
+  recMix.remoteId = id;
+  try { recMix.remoteNode?.disconnect(); } catch { /* ignore */ }
+  try {
+    recMix.remoteNode = recMix.ctx.createMediaStreamSource(remote);
+    recMix.remoteNode.connect(recMix.dest);
+  } catch { /* ignore */ }
+}
+
+function beginCallRecording() {
+  if (recMix.recorder && recMix.recorder.state !== 'inactive') return;
+  recMix.chunks = [];
+  recMix.remoteId = '';
+  recMix.remoteNode = null;
+  recMix.localNode = null;
+  const ctx = new AudioContext();
+  recMix.ctx = ctx;
+  recMix.dest = ctx.createMediaStreamDestination();
+  ctx.resume().catch(() => undefined);
+  const mime = pickRecorderMime();
+  const recorder = mime
+    ? new MediaRecorder(recMix.dest.stream, { mimeType: mime, audioBitsPerSecond: 48000 })
+    : new MediaRecorder(recMix.dest.stream);
+  recMix.recorder = recorder;
+  recorder.ondataavailable = (event) => {
+    if (event.data && event.data.size) recMix.chunks.push(event.data);
+  };
+  try { recorder.start(1000); } catch { /* ignore */ }
+}
+
+function includeAgentInRecording() {
+  if (!recMix.ctx || !recMix.dest || recMix.localNode) return;
+  if (!shared?.local) return;
+  try {
+    recMix.localNode = recMix.ctx.createMediaStreamSource(shared.local);
+    recMix.localNode.connect(recMix.dest);
+  } catch { /* ignore */ }
+}
+
+function finishCallRecording(): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      const type = recMix.recorder?.mimeType || 'audio/webm';
+      const chunks = recMix.chunks.slice();
+      const ctx = recMix.ctx;
+      recMix = { ctx: null, dest: null, recorder: null, chunks: [], localNode: null, remoteNode: null, remoteId: '' };
+      if (ctx) ctx.close().catch(() => undefined);
+      const blob = chunks.length ? new Blob(chunks, { type }) : null;
+      resolve(blob && blob.size > 64 ? blob : null);
+    };
+    const recorder = recMix.recorder;
+    if (!recorder || recorder.state === 'inactive') {
+      done();
+      return;
+    }
+    recorder.onstop = done;
+    try {
+      recorder.requestData();
+      recorder.stop();
+    } catch {
+      done();
+      return;
+    }
+    window.setTimeout(done, 1500);
+  });
 }
 
 function hangupInviter(inviter: Inviter | null) {
@@ -223,9 +327,11 @@ export function useWebPhone() {
     audio.play().catch(() => undefined);
     const inviter = new Inviter(shared.ua, target, {
       earlyMedia: true,
+      extraHeaders: listeners.extraHeaders || [],
       sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
     });
     shared.conference = inviter;
+    beginCallRecording();
     let accepted = false;
     inviter.stateChange.addListener((state) => {
       if (state === SessionState.Establishing) {
@@ -243,6 +349,7 @@ export function useWebPhone() {
       }
     });
     await inviter.invite({
+      extraHeaders: listeners.extraHeaders || [],
       requestDelegate: {
         onProgress: () => {
           attachRemote(inviter);
@@ -365,6 +472,8 @@ export function useWebPhone() {
     connectSip,
     placeCall,
     hangupCall,
+    stopCallRecording: finishCallRecording,
+    includeAgentInRecording,
     joinConference,
     leaveConference,
     setMuted,

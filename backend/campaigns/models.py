@@ -48,6 +48,9 @@ class Campaign(models.Model):
         settings.AUTH_USER_MODEL, blank=True, related_name="assigned_campaigns"
     )
     hold_audio = models.FileField(upload_to=hold_audio_upload_to, blank=True, null=True)
+    code = models.CharField(max_length=32, blank=True, default="")
+    wrap_up_seconds = models.PositiveIntegerField(default=30)
+    dial_ratio = models.PositiveSmallIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

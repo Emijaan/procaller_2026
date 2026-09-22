@@ -14,7 +14,8 @@ import Team from './components/views/Team';
 import Recordings from './components/views/Recordings';
 import FollowUps from './components/views/FollowUps';
 import Agencies from './components/views/Agencies';
-import { CallQueue, IVR, Integrations, Reports } from './components/views/OtherViews';
+import Reports from './components/views/Reports';
+import { CallQueue, IVR, Integrations } from './components/views/OtherViews';
 import { ToastContainer, useToast } from './components/ui/index';
 import { useAuth } from './context/AuthContext';
 
@@ -161,7 +162,7 @@ export default function App() {
       case 'analytics': return <Analytics />;
       case 'live_ops': return <LiveOps showToast={showToast} />;
       case 'team': return <Team showToast={showToast} />;
-      case 'recordings': return <Recordings />;
+      case 'recordings': return <Recordings showToast={showToast} />;
       case 'followups': return <FollowUps showToast={showToast} />;
       case 'settings': return <Settings showToast={showToast} />;
       case 'ivr': return <IVR />;

@@ -85,24 +85,52 @@ class ContactDetailView(APIView):
         return Response(ContactSerializer(contact).data)
 
 
+class LookupLeadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .queue import lookup_lead_by_phone
+
+        phone = request.query_params.get("phone") or request.query_params.get("q") or ""
+        campaign = request.query_params.get("campaign") or request.query_params.get("campaign_id")
+        lead = lookup_lead_by_phone(request.user, phone, campaign_id=campaign or None)
+        if not lead:
+            return Response({"detail": "No matching lead"}, status=404)
+        return Response(ContactSerializer(lead).data)
+
+
 class NextLeadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        return self._reserve(request)
+
+    def post(self, request):
+        return self._reserve(request)
+
+    def _reserve(self, request):
         require_perm(request.user, "preview_auto_dial")
-        now = timezone.now()
-        qs = scoped_leads(request.user, Contact.objects.all()).filter(dnc=False)
-        if request.user.normalized_role == "user":
-            qs = qs.filter(owner=request.user)
-        campaign = request.query_params.get("campaign")
-        if campaign:
-            qs = qs.filter(campaign_id=campaign)
-        due_callback = qs.filter(lead_status="callback", next_callback_at__lte=now).order_by("next_callback_at").first()
-        nxt = due_callback or qs.filter(lead_status__in=["new", "assigned", "not_connected", "busy", "no_answer"]).order_by("call_count", "id").first()
+        from telephony.modes import current_mode
+        from telephony.models import AgentModeSession
+        from .queue import reserve_next_lead
+
+        campaign = request.query_params.get("campaign") or (request.data.get("campaign") if hasattr(request, "data") else None) or (request.data.get("campaign_id") if hasattr(request, "data") else None)
+        if current_mode(request.user) != AgentModeSession.Mode.PREVIEW:
+            return Response({"detail": "Switch to Preview Auto before taking a queue lead"}, status=400)
+        try:
+            nxt = reserve_next_lead(request.user, campaign_id=campaign)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         if not nxt:
             return Response({"detail": "No leads available"}, status=404)
-        if not nxt.owner_id and request.user.normalized_role == "user":
-            nxt.owner = request.user
-            nxt.lead_status = Contact.LeadStatus.ASSIGNED
-            nxt.save(update_fields=["owner", "lead_status"])
         return Response(ContactSerializer(nxt).data)
+
+
+class ReleaseLeadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from telephony.modes import release_agent_reservations
+
+        release_agent_reservations(request.user)
+        return Response({"ok": True})

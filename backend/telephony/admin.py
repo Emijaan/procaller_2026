@@ -1,11 +1,17 @@
 from django.contrib import admin
 
-from .models import AgentSession, Call
+from .models import AgentModeSession, AgentSession, Call
 
 
 @admin.register(AgentSession)
 class AgentSessionAdmin(admin.ModelAdmin):
     list_display = ("user", "status", "room_id", "started_at", "ended_at")
+
+
+@admin.register(AgentModeSession)
+class AgentModeSessionAdmin(admin.ModelAdmin):
+    list_display = ("user", "mode", "dial_ratio", "started_at", "ended_at", "duration_seconds")
+    list_filter = ("mode",)
 
 
 @admin.register(Call)
