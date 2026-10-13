@@ -37,25 +37,26 @@ def release_lead(lead, status=None):
     lead.save(update_fields=fields)
 
 
-def reserve_next_lead(user, campaign_id=None, exclude_ids=None):
+def reserve_next_lead(user, campaign_id=None, exclude_ids=None, tts_ready=False):
     release_stale_reservations()
     now = timezone.now()
     skip = {int(pk) for pk in (exclude_ids or []) if pk}
     qs = scoped_leads(user, Contact.objects.filter(dnc=False, status=Contact.Status.ACTIVE))
+    if tts_ready:
+        qs = qs.filter(tts_status="ready").exclude(tts_audio="")
     if skip:
         qs = qs.exclude(pk__in=skip)
+    from accounts.access import assert_can_use_campaign, is_calling_agent
+
+    if is_calling_agent(user) and not campaign_id:
+        raise ValueError("Select a campaign before calling")
     if campaign_id:
         camp = Campaign.objects.filter(pk=campaign_id).first()
         if not camp:
             raise ValueError("Campaign not found")
-        if not camp.active and camp.status not in {Campaign.Status.ACTIVE, Campaign.Status.RUNNING}:
-            raise ValueError("Campaign is not active")
+        assert_can_use_campaign(user, camp)
         qs = qs.filter(campaign_id=campaign_id)
-        if getattr(user, "normalized_role", user.role) == "user":
-            assigned = camp.assigned_users.filter(pk=user.id).exists()
-            if not assigned and camp.assigned_users.exists():
-                raise ValueError("You are not assigned to this campaign")
-    if getattr(user, "normalized_role", user.role) == "user":
+    if is_calling_agent(user):
         qs = qs.filter(Q(owner=user) | Q(owner__isnull=True) | Q(campaign__assigned_users=user))
 
     due_ids = list(

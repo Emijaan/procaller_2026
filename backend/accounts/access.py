@@ -4,8 +4,33 @@ from .catalog import ROLE_PERMISSIONS
 from .models import User
 
 
+ROLE_RANK = {
+    User.Role.USER: 10,
+    User.Role.AGENT: 10,
+    User.Role.ADMIN: 20,
+    User.Role.MANAGER: 30,
+    User.Role.SUPERVISOR: 30,
+    User.Role.AGENCY: 40,
+    User.Role.SUPER_ADMIN: 50,
+}
+
+
 def role_of(user):
     return getattr(user, "normalized_role", user.role)
+
+
+def role_rank(user):
+    if not user:
+        return 0
+    if is_super_admin(user):
+        return ROLE_RANK[User.Role.SUPER_ADMIN]
+    return ROLE_RANK.get(role_of(user), 0)
+
+
+def is_strictly_below(actor, target):
+    if not actor or not target or actor.pk == target.pk:
+        return False
+    return role_rank(target) < role_rank(actor)
 
 
 def is_super_admin(user):
@@ -48,6 +73,8 @@ def has_perm(user, code):
         return False
     extra = set(user.extra_permissions or [])
     if code in extra:
+        if code == "create_agency":
+            return False
         return True
     return code in ROLE_PERMISSIONS.get(role_of(user), [])
 
@@ -57,11 +84,16 @@ def agency_of(user):
 
 
 def descendant_ids(user):
+    """Users who report up to this user, staying inside the same agency."""
     ids = {user.id}
     queue = [user.id]
+    org_id = getattr(user, "organization_id", None)
     while queue:
-        kids = list(User.objects.filter(reports_to_id__in=queue).values_list("id", flat=True))
-        queue = [kid for kid in kids if kid not in ids]
+        kids = User.objects.filter(reports_to_id__in=queue)
+        if org_id:
+            kids = kids.filter(organization_id=org_id)
+        kids = [kid for kid in kids.values_list("id", flat=True) if kid not in ids]
+        queue = kids
         ids.update(queue)
     return ids
 
@@ -89,7 +121,7 @@ def scoped_campaigns(user, qs):
     org = agency_of(user)
     if not org:
         return qs.none()
-    qs = qs.filter(Q(agency=org) | Q(agency__isnull=True))
+    qs = qs.filter(agency=org)
     role = role_of(user)
     if role == User.Role.AGENCY:
         return qs
@@ -98,7 +130,25 @@ def scoped_campaigns(user, qs):
         return qs.filter(Q(manager=user) | Q(admin_id__in=tree) | Q(created_by=user) | Q(assigned_users=user)).distinct()
     if role == User.Role.ADMIN:
         return qs.filter(Q(admin=user) | Q(created_by=user) | Q(assigned_users=user)).distinct()
-    return qs.filter(Q(assigned_users=user) | Q(contacts__owner=user)).distinct()
+    return qs.filter(assigned_users=user).distinct()
+
+
+def is_calling_agent(user):
+    return role_of(user) == User.Role.USER
+
+
+def assert_can_use_campaign(user, campaign):
+    from campaigns.models import Campaign
+
+    if not campaign:
+        raise ValueError("Select a campaign before calling")
+    if is_calling_agent(user) and not user.assigned_campaigns.filter(pk=campaign.pk).exists():
+        raise ValueError("You must be assigned to a campaign before calling")
+    if not scoped_campaigns(user, Campaign.objects.filter(pk=campaign.pk)).exists():
+        raise ValueError("You cannot use this campaign")
+    if not campaign.active and campaign.status not in {Campaign.Status.ACTIVE, Campaign.Status.RUNNING}:
+        raise ValueError("Campaign is not active")
+    return campaign
 
 
 def scoped_leads(user, qs):
@@ -107,10 +157,10 @@ def scoped_leads(user, qs):
     org = agency_of(user)
     if not org:
         return qs.filter(owner=user)
-    qs = qs.filter(Q(agency=org) | Q(agency__isnull=True))
+    qs = qs.filter(agency=org)
     role = role_of(user)
     if role == User.Role.AGENCY:
-        return qs.filter(agency=org)
+        return qs
     if role == User.Role.MANAGER:
         tree = descendant_ids(user)
         return qs.filter(
@@ -136,7 +186,7 @@ def scoped_calls(user, qs):
         return qs
     org = agency_of(user)
     if org:
-        qs = qs.filter(Q(agent__organization=org) | Q(campaign__agency=org))
+        qs = qs.filter(agent__organization=org).filter(Q(campaign__isnull=True) | Q(campaign__agency=org))
     else:
         return qs.filter(agent=user)
     role = role_of(user)
@@ -156,7 +206,7 @@ def scoped_recordings(user, qs):
     org = agency_of(user)
     if not org:
         return qs.filter(agent=user)
-    qs = qs.filter(Q(agent__organization=org) | Q(campaign__agency=org))
+    qs = qs.filter(agent__organization=org).filter(Q(campaign__isnull=True) | Q(campaign__agency=org))
     role = role_of(user)
     if role == User.Role.AGENCY:
         return qs

@@ -8,7 +8,7 @@ from rest_framework.test import APIClient
 from accounts.models import Organization, User
 from campaigns.models import Campaign
 from crm.models import Contact
-from telephony.models import AgentModeSession, Call
+from telephony.models import AgentModeSession, AgentSession, Call
 from telephony.modes import close_open_modes, mode_totals, set_agent_mode
 from telephony.services import hangup_call, set_call_flag
 
@@ -50,6 +50,10 @@ class PreviewAutoDialerTests(TestCase):
             created_by=self.agency_b,
             status=Campaign.Status.ACTIVE,
             active=True,
+        )
+        self.camp_b.assigned_users.set([self.agent_b])
+        self.agent_unassigned = User.objects.create_user(
+            email="free@a.com", password="x", role=User.Role.USER, organization=self.org, reports_to=self.agency
         )
         self.lead = Contact.objects.create(
             name="Lead One",
@@ -98,7 +102,10 @@ class PreviewAutoDialerTests(TestCase):
     def test_preview_auto_starts_manual_break_offline_do_not(self):
         client = self._login("u1@a.com")
         for mode in ("manual", "break", "offline"):
-            client.post("/api/agent/mode/", {"mode": mode}, format="json")
+            payload = {"mode": mode}
+            if mode == "manual":
+                payload["campaign_id"] = self.camp.id
+            client.post("/api/agent/mode/", payload, format="json")
             blocked = client.post("/api/leads/reserve/", {"campaign": self.camp.id}, format="json")
             self.assertEqual(blocked.status_code, 400, mode)
             preview_call = client.post(
@@ -119,6 +126,21 @@ class PreviewAutoDialerTests(TestCase):
         self.assertEqual(started.status_code, 201)
         self.assertEqual(Call.objects.filter(contact_id=reserved.data["id"]).count(), 1)
 
+    def test_unassigned_user_cannot_call(self):
+        client = self._login("free@a.com")
+        mode = client.post("/api/agent/mode/", {"mode": "manual", "campaign_id": self.camp.id}, format="json")
+        self.assertEqual(mode.status_code, 400)
+        blocked = client.post(
+            "/api/calls/",
+            {"phone_number": "9000000001", "campaign_id": self.camp.id, "client_dial": True},
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, 400)
+        self.assertIn("assigned", str(blocked.data).lower())
+        listed = client.get("/api/campaigns/")
+        names = [row["name"] for row in listed.data]
+        self.assertNotIn("A Camp", names)
+
     def test_stale_reservation_is_released(self):
         a = self._login("u1@a.com")
         b = self._login("u2@a.com")
@@ -133,7 +155,7 @@ class PreviewAutoDialerTests(TestCase):
         self.assertTrue(first.data["id"] in ids)
 
     def test_mode_durations_use_server_timestamps(self):
-        set_agent_mode(self.agent1, "preview")
+        set_agent_mode(self.agent1, "preview", campaign=self.camp)
         row = AgentModeSession.objects.filter(user=self.agent1, ended_at__isnull=True).first()
         AgentModeSession.objects.filter(pk=row.pk).update(started_at=timezone.now() - timedelta(seconds=90))
         close_open_modes(self.agent1)
@@ -316,6 +338,89 @@ class PreviewAutoDialerTests(TestCase):
         camp = agency.patch(f"/api/campaigns/{self.camp.id}/", {"dial_ratio": 99}, format="json")
         self.assertEqual(camp.status_code, 200)
         self.assertEqual(camp.data["dial_ratio"], 32)
+
+    def test_agency_creates_admin_and_cannot_create_above(self):
+        agency = self._login("agency@a.com")
+        created = agency.post(
+            "/api/staff/",
+            {"email": "adm@a.com", "password": "x", "role": "admin", "organization": self.org.id},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["role"], "admin")
+        denied = agency.post(
+            "/api/staff/",
+            {"email": "root2@a.com", "password": "x", "role": "super_admin"},
+            format="json",
+        )
+        self.assertIn(denied.status_code, (400, 403))
+        user = self._login("u1@a.com")
+        above = user.post(
+            "/api/staff/",
+            {"email": "mgr@a.com", "password": "x", "role": "manager", "organization": self.org.id},
+            format="json",
+        )
+        self.assertEqual(above.status_code, 403)
+
+    def test_force_logout_kills_session_and_cannot_touch_above(self):
+        seated = self._login("u1@a.com")
+        agency = self._login("agency@a.com")
+        kicked = agency.post("/api/live/actions/", {"action": "logout", "agent_id": self.agent1.id}, format="json")
+        self.assertEqual(kicked.status_code, 200, kicked.data)
+        self.assertEqual(seated.get("/api/auth/me/").status_code, 401)
+        fresh = self._login("u1@a.com")
+        blocked = fresh.post("/api/live/actions/", {"action": "logout", "agent_id": self.agency.id}, format="json")
+        self.assertEqual(blocked.status_code, 404)
+
+    def test_listen_targets_the_user_extension(self):
+        self.agent1.extension = "2108"
+        self.agent1.sip_username = "2108"
+        self.agent1.save(update_fields=["extension", "sip_username"])
+        Call.objects.create(
+            agent=self.agent1,
+            campaign=self.camp,
+            phone_number="9000000001",
+            callerid_token="spy-token-1",
+            state=Call.State.CONNECTED,
+        )
+        agency = self._login("agency@a.com")
+        heard = agency.post("/api/live/actions/", {"action": "listen", "agent_id": self.agent1.id}, format="json")
+        self.assertEqual(heard.status_code, 200, heard.data)
+        self.assertEqual(heard.data["dial"], "*5512108")
+        whisper = agency.post("/api/live/actions/", {"action": "whisper", "agent_id": self.agent1.id}, format="json")
+        self.assertEqual(whisper.data["dial"], "*5522108")
+        barge = agency.post("/api/live/actions/", {"action": "barge", "agent_id": self.agent1.id}, format="json")
+        self.assertEqual(barge.data["dial"], "*5532108")
+        idle = agency.post("/api/live/actions/", {"action": "listen", "agent_id": self.agent2.id}, format="json")
+        self.assertEqual(idle.status_code, 400)
+
+    def test_hopper_places_one_call_per_seated_user_up_to_threads(self):
+        from telephony.hopper import fill_campaign
+
+        self.camp.auto_running = True
+        self.camp.dial_method = Campaign.DialMethod.POWER
+        self.camp.dial_ratio = 5
+        self.camp.status = Campaign.Status.RUNNING
+        self.camp.save()
+        for agent in (self.agent1, self.agent2):
+            AgentSession.objects.create(user=agent, campaign=self.camp, room_id=f"seat-{agent.id}", status="ready")
+            set_agent_mode(agent, "preview", campaign=self.camp)
+        calls = fill_campaign(self.camp)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual({call.agent_id for call in calls}, {self.agent1.id, self.agent2.id})
+        self.assertTrue(all(call.dial_batch.startswith(f"hopper-{self.camp.id}-") for call in calls))
+        self.assertEqual(fill_campaign(self.camp), [])
+
+        self.camp.dial_ratio = 1
+        self.camp.save(update_fields=["dial_ratio"])
+        for call in calls:
+            hangup_call(call, outcome=Call.Outcome.CANCELLED)
+        for agent in (self.agent1, self.agent2):
+            agent.refresh_from_db()
+            agent.presence = User.Presence.AVAILABLE
+            agent.save(update_fields=["presence"])
+        one = fill_campaign(self.camp)
+        self.assertEqual(len(one), 1)
 
 
 @override_settings(TELEPHONY_BACKEND="sandbox")

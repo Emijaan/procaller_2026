@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.access import is_super_admin, scoped_calls
+from accounts.access import agency_of, scoped_calls, scoped_campaigns, scoped_leads
 from campaigns.models import Campaign
 from crm.models import Contact
 
@@ -32,6 +32,22 @@ from .services import (
 )
 
 
+def _campaign_for(user, campaign_id):
+    if not campaign_id:
+        return None, None
+    camp = scoped_campaigns(user, Campaign.objects.filter(pk=campaign_id)).first()
+    if camp:
+        return camp, None
+    raw = Campaign.objects.filter(pk=campaign_id).only("id", "agency_id").first()
+    own = agency_of(user)
+    if raw and own and raw.agency_id == own.id:
+        return None, Response(
+            {"detail": "You must be assigned to a campaign before calling"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return None, Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
 class SessionStartView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -39,8 +55,13 @@ class SessionStartView(APIView):
         campaign = None
         campaign_id = request.data.get("campaign_id")
         if campaign_id:
-            campaign = get_object_or_404(Campaign, pk=campaign_id)
-        session, payload = start_session(request.user, campaign)
+            campaign, denied = _campaign_for(request.user, campaign_id)
+            if denied:
+                return denied
+        try:
+            session, payload = start_session(request.user, campaign)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         return Response({"session": {"id": session.id, "room_id": session.room_id, "status": session.status}, **payload})
 
 
@@ -72,10 +93,14 @@ class CallListCreateView(APIView):
         contact = None
         campaign = None
         if request.data.get("contact_id"):
-            contact = get_object_or_404(Contact, pk=request.data["contact_id"])
+            contact = scoped_leads(request.user, Contact.objects.filter(pk=request.data["contact_id"])).first()
+            if not contact:
+                return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
             phone = phone or contact.phone
         if request.data.get("campaign_id"):
-            campaign = get_object_or_404(Campaign, pk=request.data["campaign_id"])
+            campaign, denied = _campaign_for(request.user, request.data["campaign_id"])
+            if denied:
+                return denied
         session = AgentSession.objects.filter(user=request.user, ended_at__isnull=True).order_by("-id").first()
         client_dial = bool(request.data.get("client_dial"))
         preview = bool(request.data.get("preview"))
@@ -102,7 +127,9 @@ class PreviewBatchView(APIView):
     def post(self, request):
         campaign = None
         if request.data.get("campaign_id"):
-            campaign = get_object_or_404(Campaign, pk=request.data["campaign_id"])
+            campaign, denied = _campaign_for(request.user, request.data["campaign_id"])
+            if denied:
+                return denied
         session = AgentSession.objects.filter(user=request.user, ended_at__isnull=True).order_by("-id").first()
         try:
             calls, conference, ratio = originate_preview_batch(
@@ -145,7 +172,7 @@ class CallHangupView(APIView):
 
     def post(self, request, pk):
         call = get_object_or_404(Call, pk=pk, agent=request.user)
-        hangup_call(call)
+        hangup_call(call, outcome="" if call.answered_at else Call.Outcome.CANCELLED)
         return Response(CallSerializer(call).data)
 
 
@@ -175,9 +202,9 @@ class CallAnswerView(APIView):
     def post(self, request, pk):
         from .services import mark_answered
 
-        call = get_object_or_404(Call, pk=pk)
-        if call.agent_id != request.user.id and request.user.role == "agent":
-            return Response({"detail": "Not allowed"}, status=status.HTTP_403_FORBIDDEN)
+        call = scoped_calls(request.user, Call.objects.filter(pk=pk)).first()
+        if not call:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
         mark_answered(call)
         return Response(CallSerializer(call).data)
 
@@ -208,9 +235,9 @@ class CallRecordingUploadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        call = get_object_or_404(Call, pk=pk)
-        if call.agent_id != request.user.id and not is_super_admin(request.user):
-            return Response({"detail": "Not allowed"}, status=status.HTTP_403_FORBIDDEN)
+        call = scoped_calls(request.user, Call.objects.filter(pk=pk)).first()
+        if not call:
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
         upload = request.FILES.get("file")
         if not upload:
             return Response({"detail": "Recording file is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -273,7 +300,9 @@ class AgentModeView(APIView):
         mode = (request.data.get("mode") or "").strip().lower()
         campaign = None
         if request.data.get("campaign_id"):
-            campaign = Campaign.objects.filter(pk=request.data.get("campaign_id")).first()
+            campaign, denied = _campaign_for(request.user, request.data.get("campaign_id"))
+            if denied:
+                return denied
         live = AgentModeSession.objects.filter(user=request.user, ended_at__isnull=True).order_by("-id").first()
         try:
             if mode:

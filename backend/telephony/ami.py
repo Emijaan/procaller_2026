@@ -139,12 +139,35 @@ def cli_output(command, timeout=8):
     return output or reply.get("Message") or ""
 
 
-def originate_to_conference(number, conference, callerid_token, call_id, timeout=60):
+def originate_playback(number, wav_path, callerid_token, call_id, dial_prefix="", timeout=60):
+    """Dial the customer and, only after answer, play the Piper WAV."""
+    stem = str(wav_path)
+    if stem.lower().endswith(".wav"):
+        stem = stem[:-4]
     ami = get_ami()
     reply = ami.send(
         {
             "Action": "Originate",
-            "Channel": ami_pstn_channel(number),
+            "Channel": ami_pstn_channel(number, dial_prefix=dial_prefix),
+            "Application": "Playback",
+            "Data": stem,
+            "CallerID": f'"{callerid_token}" <{number}>',
+            "Timeout": str(int(timeout) * 1000),
+            "Async": "true",
+            "Variable": f"PROCALLER_ID={call_id}",
+        }
+    )
+    if reply.get("Response") == "Error":
+        raise RuntimeError(reply.get("Message") or "AMI playback originate failed")
+    return reply
+
+
+def originate_to_conference(number, conference, callerid_token, call_id, timeout=60, dial_prefix=""):
+    ami = get_ami()
+    reply = ami.send(
+        {
+            "Action": "Originate",
+            "Channel": ami_pstn_channel(number, dial_prefix=dial_prefix),
             "Context": "procaller-agent",
             "Exten": conference,
             "Priority": "1",
@@ -169,46 +192,94 @@ def hangup_channel(channel):
         logger.exception("AMI hangup failed for %s", channel)
 
 
+def _event_token(msg):
+    for key in ("Token", "CallerIDName", "ConnectedLineName"):
+        token = msg.get(key) or ""
+        if isinstance(token, list):
+            token = token[0] if token else ""
+        token = str(token).strip().strip('"')
+        if token.startswith("P"):
+            return token
+    return ""
+
+
+def _customer_channel(call, channel):
+    if not channel:
+        return False
+    low = channel.lower()
+    if "confbridge" in low:
+        return False
+    if call.asterisk_channel and channel == call.asterisk_channel:
+        return True
+    if "procaller-outbound" in low or "gsm" in low or low.startswith("local/"):
+        return True
+    phone = "".join(ch for ch in (call.phone_number or "") if ch.isdigit())[-10:]
+    return bool(phone and phone in "".join(ch for ch in low if ch.isdigit()))
+
+
+def _find_call(msg):
+    from telephony.models import Call
+
+    token = _event_token(msg)
+    if token:
+        call = Call.objects.filter(callerid_token=token).order_by("-id").first()
+        if call:
+            return call
+    for key in ("Channel", "DestChannel"):
+        channel = msg.get(key) or ""
+        if channel:
+            call = Call.objects.filter(asterisk_channel=channel).order_by("-id").first()
+            if call:
+                return call
+    return None
+
+
 def _handle_event(msg):
     event = msg.get("Event")
-    if event not in {"Newstate", "Hangup", "OriginateResponse"}:
+    if event == "UserEvent" and msg.get("UserEvent") != "ProCallerDial":
+        return
+    if event not in {"Newstate", "Hangup", "OriginateResponse", "DialEnd", "UserEvent"}:
         return
     from telephony.models import Call
     from telephony.realtime import broadcast_call
     from telephony.services import hangup_call, mark_answered
     from django.utils import timezone
 
-    call = None
-    token = msg.get("CallerIDName") or msg.get("ConnectedLineName") or ""
-    var = msg.get("Variable") or msg.get("ChanVariable(PROCALLER_ID)") or ""
-    if token.startswith("P"):
-        call = Call.objects.filter(callerid_token=token).order_by("-id").first()
-    if not call and msg.get("Channel"):
-        call = Call.objects.filter(asterisk_channel=msg["Channel"]).first()
-    if event == "OriginateResponse" and msg.get("Uniqueid"):
-        # Uniqueid matching is weak; store channel when we have ActionID later
-        pass
+    call = _find_call(msg)
     if not call:
         return
 
-    channel = msg.get("Channel") or ""
-    if channel and "procaller-outbound" in channel and not call.asterisk_channel:
+    channel = msg.get("DestChannel") or msg.get("Channel") or ""
+    if channel and _customer_channel(call, channel) and not call.asterisk_channel:
         call.asterisk_channel = channel
         call.save(update_fields=["asterisk_channel"])
 
     state = msg.get("ChannelStateDesc") or msg.get("ChannelState") or ""
-    if event == "Newstate" and state == "Ringing" and call.state == Call.State.INITIATING:
+    if event == "Newstate" and state == "Ringing" and call.state == Call.State.INITIATING and _customer_channel(call, channel):
         call.state = Call.State.RINGING
         call.ringing_at = timezone.now()
         call.save(update_fields=["state", "ringing_at"])
         broadcast_call(call, "call.ringing")
-    elif event == "Newstate" and state == "Up" and call.state != Call.State.ENDED:
+    elif event == "Newstate" and state == "Up" and call.state != Call.State.ENDED and _customer_channel(call, channel):
         if not call.answered_at:
             mark_answered(call)
-    elif event == "Hangup" and "procaller-outbound" in channel and call.state != Call.State.ENDED:
-        hangup_call(call)
-    elif event == "OriginateResponse" and msg.get("Response") == "Failure" and call.state != Call.State.ENDED:
-        hangup_call(call, outcome=Call.Outcome.FAILED)
+    elif event == "Hangup" and _customer_channel(call, channel):
+        hangup_call(call, cause_code=msg.get("Cause") or "", cause_text=msg.get("Cause-txt") or "")
+    elif event == "DialEnd":
+        status = (msg.get("DialStatus") or "").upper()
+        if status == "ANSWER" and call.state != Call.State.ENDED and not call.answered_at:
+            mark_answered(call)
+        elif status and status != "ANSWER":
+            hangup_call(call, dial_status=status)
+    elif event == "UserEvent":
+        status = (msg.get("Status") or "").upper()
+        cause = msg.get("Cause") or ""
+        if status == "ANSWER" and not call.answered_at:
+            mark_answered(call)
+            call.refresh_from_db()
+        hangup_call(call, cause_code=cause, dial_status=status)
+    elif event == "OriginateResponse" and msg.get("Response") == "Failure":
+        hangup_call(call, originate_reason=str(msg.get("Reason") or ""))
 
 
 def start_listener():

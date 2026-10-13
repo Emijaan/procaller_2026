@@ -50,6 +50,9 @@ class Contact(models.Model):
     lead_score = models.PositiveSmallIntegerField(default=50)
     comments = models.TextField(blank=True, default="")
     last_disposition = models.CharField(max_length=64, blank=True, default="")
+    tts_status = models.CharField(max_length=16, blank=True, default="")
+    tts_audio = models.FileField(upload_to="tts/%Y/%m/%d/", blank=True, null=True)
+    tts_error = models.CharField(max_length=240, blank=True, default="")
     last_contact_at = models.DateTimeField(null=True, blank=True)
     reserved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="reserved_leads"
@@ -64,6 +67,13 @@ class Contact(models.Model):
             models.Index(fields=["agency", "campaign", "lead_status"]),
             models.Index(fields=["agency", "phone"]),
             models.Index(fields=["owner", "lead_status"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["campaign", "phone"],
+                condition=models.Q(campaign__isnull=False),
+                name="unique_lead_phone_per_campaign",
+            ),
         ]
 
     def __str__(self):
@@ -89,6 +99,7 @@ class ImportJob(models.Model):
     invalid_rows = models.PositiveIntegerField(default=0)
     duplicate_rows = models.PositiveIntegerField(default=0)
     imported_rows = models.PositiveIntegerField(default=0)
+    dial_threads = models.PositiveSmallIntegerField(default=1)
     errors = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -8,3 +8,6 @@ psycopg[binary]>=3.2
 python-dotenv>=1.0
 openpyxl>=3.1
 requests>=2.32
+# Piper is imported from /opt/procaller_2026/pydeps because the venv is root-owned:
+# ../venv/bin/pip install --target /opt/procaller_2026/pydeps 'piper-tts==1.8.0'
+piper-tts==1.8.0

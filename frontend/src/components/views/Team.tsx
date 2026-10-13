@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Avatar, Badge, Button, SearchInput, Input, Modal, Select } from '../ui/index';
 import { api } from '../../api/client';
-import type { Organization, User } from '../../api/types';
+import type { Campaign, Organization, User } from '../../api/types';
 import { can, roleLabel } from '../../api/access';
 import { useAuth } from '../../context/AuthContext';
 
@@ -14,6 +14,8 @@ type StaffForm = {
   team: string;
   organization: string;
   reports_to: string;
+  campaigns: string[];
+  gsm_port: string;
 };
 
 const emptyForm: StaffForm = {
@@ -25,6 +27,8 @@ const emptyForm: StaffForm = {
   team: '',
   organization: '',
   reports_to: '',
+  campaigns: [],
+  gsm_port: '',
 };
 
 function roleOptions(actor: User | null) {
@@ -43,12 +47,20 @@ function isSuperActor(actor: User | null) {
 
 function canManagePerson(actor: User | null, person: User) {
   if (isSuperActor(actor)) return true;
+  const actorOrg = actor?.organization?.id;
+  const personOrg = person.organization?.id;
+  if (!actorOrg || !personOrg || Number(actorOrg) !== Number(personOrg)) return false;
   const role = person.role_normalized || person.role;
   if (role === 'super_admin') return can(actor, 'create_agency');
   if (role === 'agency') return can(actor, 'manage_agency');
   if (role === 'manager' || role === 'supervisor') return can(actor, 'manage_manager');
   if (role === 'admin') return can(actor, 'manage_admin');
   return can(actor, 'manage_user');
+}
+
+function campaignMatchesOrg(camp: Campaign, orgId: string) {
+  if (!orgId) return true;
+  return camp.agency != null && Number(camp.agency) === Number(orgId);
 }
 
 function canAddStaff(actor: User | null) {
@@ -60,6 +72,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
   const { user } = useAuth();
   const [rows, setRows] = useState<User[]>([]);
   const [agencies, setAgencies] = useState<Organization[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [open, setOpen] = useState(false);
@@ -67,6 +80,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
   const [confirm, setConfirm] = useState<{ person: User; action: 'delete' | 'deactivate' } | null>(null);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<StaffForm>(emptyForm);
+  const [ports, setPorts] = useState<{ id: number; name: string; assigned_user: number | null; caller_id: string }[]>([]);
 
   const isSuper = isSuperActor(user);
 
@@ -75,8 +89,16 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
     if (isSuperActor(user) || can(user, 'manage_agency')) {
       api<Organization[]>('/api/agencies/').then(setAgencies).catch(() => undefined);
     }
+    api<Campaign[]>('/api/campaigns/').then(setCampaigns).catch(() => undefined);
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (!open || (form.role !== 'user' && form.role !== 'agent')) return;
+    const query = form.organization ? `?agency=${form.organization}` : '';
+    api<{ id: number; name: string; assigned_user: number | null; caller_id: string }[]>(`/api/telephony/ports/${query}`)
+      .then(setPorts)
+      .catch(() => setPorts([]));
+  }, [open, form.role, form.organization]);
 
   const managers = useMemo(
     () => rows.filter((row) => ['agency', 'manager', 'admin', 'super_admin'].includes(row.role_normalized || row.role)),
@@ -100,6 +122,8 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
       ...emptyForm,
       role: roleOptions(user)[0]?.value || 'user',
       organization: user?.organization?.id ? String(user.organization.id) : '',
+      campaigns: [],
+      gsm_port: '',
     });
     setOpen(true);
   };
@@ -115,6 +139,8 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
       team: person.team || '',
       organization: person.organization?.id ? String(person.organization.id) : '',
       reports_to: person.reports_to ? String(person.reports_to) : '',
+      campaigns: (person.campaign_ids || []).map(String),
+      gsm_port: person.gsm_port ? String(person.gsm_port) : '',
     });
     setOpen(true);
   };
@@ -122,6 +148,15 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
   const save = async () => {
     if (!form.email.trim()) {
       showToast('Email is required', 'error');
+      return;
+    }
+    if ((form.role === 'user' || form.role === 'agent') && form.campaigns.length === 0) {
+      showToast('Assign the user to a campaign before they can call', 'error');
+      return;
+    }
+    const freePorts = ports.filter((port) => !port.assigned_user || port.assigned_user === editing?.id);
+    if ((form.role === 'user' || form.role === 'agent') && freePorts.length > 0 && !form.gsm_port) {
+      showToast('Assign a GSM channel from this agency', 'error');
       return;
     }
     setBusy(true);
@@ -134,7 +169,11 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
         team: form.team,
         organization: form.organization ? Number(form.organization) : undefined,
         reports_to: form.reports_to ? Number(form.reports_to) : null,
+        campaigns: form.campaigns.map(Number),
       };
+      if ((form.role === 'user' || form.role === 'agent') && ports.length > 0) {
+        payload.gsm_port = form.gsm_port ? Number(form.gsm_port) : null;
+      }
       if (form.password) payload.password = form.password;
       if (editing) {
         await api(`/api/staff/${editing.id}/`, { method: 'PATCH', body: JSON.stringify(payload) });
@@ -225,6 +264,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Agency</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Reports to</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Team</th>
+              <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Campaigns</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Status</th>
             </tr>
           </thead>
@@ -261,6 +301,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
                 <td className="px-3 py-3.5 text-slate-600">{person.organization?.name || '—'}</td>
                 <td className="px-3 py-3.5 text-slate-600">{person.reports_to_name || '—'}</td>
                 <td className="px-3 py-3.5 text-slate-600">{person.team || '—'}</td>
+                <td className="px-3 py-3.5 text-slate-600">{(person.campaign_names || []).join(', ') || '—'}</td>
                 <td className="px-3 py-3.5">
                   <Badge variant={person.is_active === false ? 'danger' : 'success'}>
                     {person.is_active === false ? 'Inactive' : 'Active'}
@@ -270,7 +311,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center text-sm text-slate-400">No accounts match this filter.</td>
+                <td colSpan={8} className="px-4 py-12 text-center text-sm text-slate-400">No accounts match this filter.</td>
               </tr>
             )}
           </tbody>
@@ -307,6 +348,53 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
               })),
             ]}
           />
+          {(form.role === 'user' || form.role === 'agent') && ports.some((port) => !port.assigned_user || port.assigned_user === editing?.id) && (
+            <Select
+              label="GSM channel"
+              value={form.gsm_port}
+              onChange={(e) => setForm({ ...form, gsm_port: e.target.value })}
+              options={[
+                { value: '', label: 'Select channel' },
+                ...ports
+                  .filter((port) => !port.assigned_user || port.assigned_user === editing?.id)
+                  .map((port) => ({ value: String(port.id), label: `${port.name}${port.caller_id ? ` · ${port.caller_id}` : ''}` })),
+              ]}
+            />
+          )}
+          {(form.role === 'user' || form.role === 'agent') && (
+            <div>
+              <p className="block text-sm font-medium text-slate-700 mb-1.5">Campaigns <span className="text-red-500">*</span></p>
+              <p className="text-xs text-slate-400 mb-2">Required. The user can only use manual or auto calling on assigned campaigns.</p>
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-[#E2E8F0] p-2 space-y-1.5">
+                {campaigns
+                  .filter((camp) => campaignMatchesOrg(camp, form.organization))
+                  .map((camp) => {
+                    const checked = form.campaigns.includes(String(camp.id));
+                    return (
+                      <label key={camp.id} className="flex items-center gap-2 text-sm text-slate-700 px-1 py-0.5">
+                        <input
+                          type="checkbox"
+                          className="accent-[#4F46E5]"
+                          checked={checked}
+                          onChange={() => {
+                            const value = String(camp.id);
+                            setForm({
+                              ...form,
+                              campaigns: checked ? form.campaigns.filter((id) => id !== value) : [...form.campaigns, value],
+                            });
+                          }}
+                        />
+                        <span>{camp.name}</span>
+                        {camp.agency_name && <span className="text-xs text-slate-400">({camp.agency_name})</span>}
+                      </label>
+                    );
+                  })}
+                {campaigns.filter((camp) => campaignMatchesOrg(camp, form.organization)).length === 0 && (
+                  <p className="text-xs text-slate-400 px-1 py-2">No campaigns in this agency. Create a campaign first.</p>
+                )}
+              </div>
+            </div>
+          )}
           <Input
             label={editing ? 'New password (optional)' : 'Password'}
             type="password"

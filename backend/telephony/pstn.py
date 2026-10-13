@@ -22,9 +22,10 @@ def ari_pstn_endpoint(number):
     return f"SIP/{trunk}/{number}"
 
 
-def ami_pstn_channel(number):
-    if _style() == "vicibox" and len(number) == 10:
+def ami_pstn_channel(number, dial_prefix=""):
+    dialed = f"{dial_prefix or ''}{number}"
+    if _style() == "vicibox" and len(number) == 10 and not dial_prefix:
         return f"Local/{number}@procaller-outbound"
     if _tech() == "pjsip":
-        return f"PJSIP/{number}@{_trunk()}"
-    return f"SIP/{_trunk()}/{number}"
+        return f"PJSIP/{dialed}@{_trunk()}"
+    return f"SIP/{_trunk()}/{dialed}"

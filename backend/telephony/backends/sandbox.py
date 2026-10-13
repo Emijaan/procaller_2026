@@ -52,6 +52,10 @@ class SandboxTelephony(TelephonyBackend):
         self._later(2.8, lambda: self._set_answered(call.id))
         return {"peer_user_id": None}
 
+    def originate_prompt(self, call):
+        self._later(0.2, lambda: self._set_ringing(call.id))
+        return {"playback": True}
+
     def hangup(self, call):
         return {"ok": True}
 

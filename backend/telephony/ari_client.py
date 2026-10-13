@@ -79,8 +79,7 @@ def watch_call(call_id, channel_id):
                 continue
             if info is None:
                 if call.state != Call.State.ENDED:
-                    outcome = Call.Outcome.BUSY if not call.answered_at else ""
-                    hangup_call(call, outcome=outcome)
+                    hangup_call(call)
                 return
             state = (info.get("state") or "").lower()
             if state in {"ring", "ringing"} and call.state == Call.State.INITIATING:
@@ -133,8 +132,7 @@ def watch_gateway(call_id, number):
                 if saw_gateway:
                     misses += 1
                     if misses >= 3:
-                        outcome = "" if call.answered_at else call.Outcome.NO_ANSWER
-                        hangup_call(call, outcome=outcome)
+                        hangup_call(call)
                         return
                 continue
             misses = 0
@@ -146,7 +144,7 @@ def watch_gateway(call_id, number):
                 mark_answered(call)
         leftover = Call.objects.filter(pk=call_id).first()
         if leftover and leftover.state != leftover.State.ENDED:
-            hangup_call(leftover, outcome="" if leftover.answered_at else leftover.Outcome.NO_ANSWER)
+            hangup_call(leftover)
 
     threading.Thread(target=_run, daemon=True).start()
 

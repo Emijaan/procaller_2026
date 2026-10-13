@@ -3,7 +3,7 @@ from urllib.parse import parse_qs
 from channels.db import database_sync_to_async
 from channels.middleware import BaseMiddleware
 from django.contrib.auth.models import AnonymousUser
-from rest_framework_simplejwt.authentication import JWTAuthentication
+from accounts.authentication import EpochJWTAuthentication
 
 
 @database_sync_to_async
@@ -11,7 +11,7 @@ def user_from_token(token):
     if not token:
         return AnonymousUser()
     try:
-        auth = JWTAuthentication()
+        auth = EpochJWTAuthentication()
         validated = auth.get_validated_token(token)
         return auth.get_user(validated)
     except Exception:

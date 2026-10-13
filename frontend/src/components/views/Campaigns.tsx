@@ -18,6 +18,24 @@ function prettyStatus(s: string) {
   return (s || 'draft').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+type CampaignLead = {
+  id: number;
+  name: string;
+  phone: string;
+  lead_status?: string;
+  last_disposition?: string;
+  tts_status?: string;
+  tts_error?: string;
+  extra_data?: Record<string, string>;
+  attempt_count?: number;
+  last_agent?: string;
+  last_outcome?: string;
+  last_duration?: string;
+  calls?: { id: number; agent: string; outcome: string; disposition: string; duration: string; started_at: string }[];
+};
+
+type LeadBoard = { columns: string[]; mobile_column: string; leads: CampaignLead[] };
+
 type Preview = {
   job_id: number;
   headers: string[];
@@ -35,13 +53,19 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
   const [agents, setAgents] = useState<User[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [step, setStep] = useState(1);
-  const [draft, setDraft] = useState({ name: '', description: '', dial_method: 'preview', code: '', wrap_up_seconds: '30', dial_ratio: '1' });
+  const [draft, setDraft] = useState({ name: '', description: '', dial_method: 'power', code: '', wrap_up_seconds: '30', dial_ratio: '1', campaign_type: 'live', tts_prompt: '' });
   const [createdId, setCreatedId] = useState<number | null>(null);
   const [assigned, setAssigned] = useState<number[]>([]);
+  const [assignCamp, setAssignCamp] = useState<Campaign | null>(null);
+  const [assignIds, setAssignIds] = useState<number[]>([]);
+  const [assignBusy, setAssignBusy] = useState(false);
   const [preview, setPreview] = useState<Preview>(null);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [importResult, setImportResult] = useState('');
   const [tab, setTab] = useState('all');
+  const [leadCamp, setLeadCamp] = useState<Campaign | null>(null);
+  const [leadBoard, setLeadBoard] = useState<LeadBoard | null>(null);
+  const [openLead, setOpenLead] = useState<number | null>(null);
   const totalSteps = 6;
   const steps = ['Details', 'Import Leads', 'Assign Agents', 'Dialing Strategy', 'Schedule', 'Review'];
 
@@ -86,7 +110,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
     setPendingFile(null);
     setImportResult('');
     setAssigned([]);
-    setDraft({ name: '', description: '', dial_method: 'preview', code: '', wrap_up_seconds: '30', dial_ratio: '1' });
+    setDraft({ name: '', description: '', dial_method: 'power', code: '', wrap_up_seconds: '30', dial_ratio: '1', campaign_type: 'live', tts_prompt: '' });
   };
 
   const createCampaign = async () => {
@@ -99,6 +123,9 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
         code: draft.code,
         wrap_up_seconds: Number(draft.wrap_up_seconds) || 30,
         dial_ratio: Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1)),
+        campaign_type: draft.campaign_type,
+        tts_prompt: draft.tts_prompt,
+        tts_voice: 'en_US-lessac-low',
         status: 'draft',
       }),
     });
@@ -137,6 +164,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
     const body = new FormData();
     body.append('file', pendingFile);
     body.append('job_id', String(preview.job_id));
+    body.append('dial_threads', String(Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1))));
     const result = await fetch(`/api/campaigns/${id}/import/`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
@@ -148,6 +176,46 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
     setImportResult(`Imported ${result.imported} · Invalid ${result.invalid} · Total ${result.total_leads}`);
     showToast(`Imported ${result.imported} leads`, 'success');
     load();
+  };
+
+  const uploadAutoFile = async (camp: Campaign, file: File) => {
+    const token = localStorage.getItem('procaller.access') || '';
+    const previewBody = new FormData();
+    previewBody.append('file', file);
+    const data = await fetch(`/api/campaigns/${camp.id}/import/preview/`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: previewBody,
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json()).detail || 'Preview failed');
+      return r.json();
+    });
+    if (!data.valid_rows) throw new Error('No valid rows to import');
+    const confirmBody = new FormData();
+    confirmBody.append('file', file);
+    confirmBody.append('job_id', String(data.job_id));
+    confirmBody.append('dial_threads', String(Math.min(32, Math.max(1, camp.dial_ratio || 1))));
+    const result = await fetch(`/api/campaigns/${camp.id}/import/`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: confirmBody,
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json()).detail || 'Import failed');
+      return r.json();
+    });
+    showToast(`Imported ${result.imported} numbers · ${camp.dial_ratio || 1} threads`, 'success');
+    load();
+  };
+
+  const openLeads = async (camp: Campaign) => {
+    setLeadCamp(camp);
+    setOpenLead(null);
+    try {
+      const board = await api<LeadBoard>(`/api/campaigns/${camp.id}/leads/`);
+      setLeadBoard(board);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not load leads', 'error');
+    }
   };
 
   const setStatus = async (camp: Campaign, status: string) => {
@@ -192,7 +260,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <h3 className="font-semibold text-slate-900 text-base">{camp.name}</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">{camp.dial_method} · wrap {camp.wrap_up_seconds ?? 30}s · ratio {camp.dial_ratio ?? 1} · {camp.lead_count || 0} leads</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{camp.dial_method}{camp.auto_running ? ' · auto on' : ''} · wrap {camp.wrap_up_seconds ?? 30}s · {camp.dial_ratio ?? 1} threads · {camp.lead_count || 0} leads</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={statusVariant(camp.status)} dot={camp.status === 'running' || camp.status === 'active'}>{prettyStatus(camp.status)}</Badge>
@@ -229,6 +297,28 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                 {can(user, 'edit_campaign') && camp.status === 'draft' && (
                   <Button variant="primary" size="sm" className="flex-1" onClick={() => setStatus(camp, 'active')}>🚀 Launch</Button>
                 )}
+                {can(user, 'import_leads') && !camp.auto_running && (camp.status === 'active' || camp.status === 'running') && (
+                  <Button variant="primary" size="sm" className="flex-1" onClick={() => api(`/api/campaigns/${camp.id}/`, { method: 'PATCH', body: JSON.stringify({ auto_running: true, dial_method: 'power', status: 'running', dial_ratio: Math.min(32, Math.max(1, camp.dial_ratio || 1)) }) }).then(() => { showToast('Auto dial started', 'success'); load(); }).catch((err) => showToast(err.message, 'error'))}>Start auto</Button>
+                )}
+                {can(user, 'import_leads') && camp.auto_running && (
+                  <Button variant="secondary" size="sm" className="flex-1" onClick={() => api(`/api/campaigns/${camp.id}/`, { method: 'PATCH', body: JSON.stringify({ auto_running: false }) }).then(() => { showToast('Auto dial stopped', 'success'); load(); }).catch((err) => showToast(err.message, 'error'))}>Stop auto</Button>
+                )}
+                {camp.campaign_type === 'ibr' && can(user, 'edit_campaign') && (
+                  <Button variant="secondary" size="sm" onClick={() => api(`/api/campaigns/${camp.id}/tts/`, { method: 'POST', body: '{}' }).then((res) => { const row = res as { ready?: number; failed?: number }; showToast(`Speech ready ${row.ready || 0}, failed ${row.failed || 0}`, row.failed ? 'info' : 'success'); }).catch((err) => showToast(err.message, 'error'))}>Generate speech</Button>
+                )}
+                <Button variant="outline" size="sm" onClick={() => openLeads(camp).catch(() => undefined)}>Leads</Button>
+                {can(user, 'edit_campaign') && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setAssignCamp(camp);
+                      setAssignIds(camp.assigned_users || []);
+                    }}
+                  >
+                    Assign users
+                  </Button>
+                )}
                 {can(user, 'edit_campaign') && (
                   <label className="h-8 px-3 inline-flex items-center rounded-lg border border-[#E2E8F0] text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">
                     🎵 Hold MP3
@@ -245,8 +335,39 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   </label>
                 )}
               </div>
+              {can(user, 'import_leads') && (
+                <div className="flex items-center gap-2 mt-3">
+                  <label className="text-[10px] text-slate-500 shrink-0">Threads</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={32}
+                    defaultValue={camp.dial_ratio || 1}
+                    key={`${camp.id}-${camp.dial_ratio}`}
+                    className="w-16 h-8 rounded-lg border border-[#E2E8F0] px-2 text-xs"
+                    onBlur={(e) => {
+                      const threads = Math.min(32, Math.max(1, Number(e.target.value) || 1));
+                      api(`/api/campaigns/${camp.id}/`, { method: 'PATCH', body: JSON.stringify({ dial_ratio: threads }) }).then(load).catch((err) => showToast(err.message, 'error'));
+                    }}
+                  />
+                  <label className="h-8 px-3 inline-flex items-center rounded-lg border border-[#E2E8F0] text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">
+                    Upload Excel
+                    <input
+                      type="file"
+                      accept=".xlsx,.xls"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (file) uploadAutoFile(camp, file).catch((err) => showToast(err.message, 'error'));
+                      }}
+                    />
+                  </label>
+                </div>
+              )}
               <p className="text-[10px] text-slate-400 mt-2">
                 Hold audio: {camp.has_hold_audio ? (camp.hold_audio_name || 'Uploaded MP3') : 'Default tone · MP3 up to 5MB'}
+                {camp.auto_running ? ' · Answered calls go to users seated in Preview Auto.' : ''}
               </p>
             </Card>
           ))}
@@ -281,6 +402,21 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">Campaign Code</label>
                   <input className="w-full h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30" placeholder="e.g. DEL-REC" value={draft.code} onChange={(e) => setDraft({ ...draft, code: e.target.value })} />
                 </div>
+                {user?.organization?.ibr_enabled && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">Campaign type</label>
+                    <select className="w-full h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm" value={draft.campaign_type} onChange={(e) => setDraft({ ...draft, campaign_type: e.target.value })}>
+                      <option value="live">Live agent</option>
+                      <option value="ibr">IBR broadcast</option>
+                    </select>
+                  </div>
+                )}
+                {draft.campaign_type === 'ibr' && (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">Speech prompt</label>
+                    <textarea className="w-full h-20 rounded-lg border border-[#E2E8F0] px-3 py-2 text-sm resize-none" placeholder="Hello {{customer_name}}, your outstanding loan amount is {{loan_amount}} rupees." value={draft.tts_prompt} onChange={(e) => setDraft({ ...draft, tts_prompt: e.target.value })} />
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">Description</label>
                   <textarea className="w-full h-20 rounded-lg border border-[#E2E8F0] px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[#4F46E5]/30" placeholder="What is this campaign about?" value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
@@ -341,17 +477,17 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               <h3 className="text-sm font-semibold text-slate-700">Dialing Strategy</h3>
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { id: 'preview', label: 'Preview Auto', desc: 'System reserves the next lead and dials automatically' },
+                  { id: 'power', label: 'Campaign auto', desc: 'Dial N numbers at once. Each answered call goes to one user seated in the campaign.' },
+                  { id: 'preview', label: 'Preview Auto', desc: 'Each user dials their own ratio from the campaign list' },
                   { id: 'manual', label: 'Manual', desc: 'Agent manually initiates each call' },
                   { id: 'progressive', label: 'Progressive', desc: 'Coming later — not enabled yet' },
-                  { id: 'power', label: 'Power', desc: 'Coming later — not enabled yet' },
                 ].map((mode) => (
-                  <label key={mode.id} className={`flex items-start gap-3 p-4 rounded-xl border cursor-pointer transition-colors ${draft.dial_method === mode.id ? 'border-[#4F46E5] bg-[#EEF2FF]' : 'border-[#E2E8F0] hover:border-[#4F46E5]/40'} ${mode.id === 'progressive' || mode.id === 'power' ? 'opacity-60' : ''}`}>
+                  <label key={mode.id} className={`flex items-start gap-3 p-4 rounded-xl border cursor-pointer transition-colors ${draft.dial_method === mode.id ? 'border-[#4F46E5] bg-[#EEF2FF]' : 'border-[#E2E8F0] hover:border-[#4F46E5]/40'} ${mode.id === 'progressive' ? 'opacity-60' : ''}`}>
                     <input
                       type="radio"
                       name="mode"
                       value={mode.id}
-                      disabled={mode.id === 'progressive' || mode.id === 'power'}
+                      disabled={mode.id === 'progressive'}
                       checked={draft.dial_method === mode.id}
                       onChange={() => setDraft({ ...draft, dial_method: mode.id })}
                       className="mt-0.5 accent-[#4F46E5]"
@@ -369,7 +505,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   <input type="number" min={0} className="w-32 h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none" value={draft.wrap_up_seconds} onChange={(e) => setDraft({ ...draft, wrap_up_seconds: e.target.value })} />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Dial ratio (1–32)</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">{draft.dial_method === 'power' ? 'Threads at once (1–32)' : 'Dial ratio (1–32)'}</label>
                   <input type="number" min={1} max={32} className="w-32 h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none" value={draft.dial_ratio} onChange={(e) => setDraft({ ...draft, dial_ratio: e.target.value })} />
                 </div>
               </div>
@@ -419,7 +555,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   if (step < totalSteps) {
                     setStep((p) => p + 1);
                   } else {
-                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ status: 'active', dial_method: draft.dial_method, assigned_users: assigned, wrap_up_seconds: Number(draft.wrap_up_seconds) || 30, dial_ratio: Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1)), code: draft.code }) });
+                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ status: draft.dial_method === 'power' ? 'running' : 'active', dial_method: draft.dial_method, auto_running: draft.dial_method === 'power', assigned_users: assigned, wrap_up_seconds: Number(draft.wrap_up_seconds) || 30, dial_ratio: Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1)), code: draft.code }) });
                     showToast('Campaign saved', 'success');
                     resetWizard();
                     load();
@@ -431,6 +567,112 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
             >
               {step < totalSteps ? 'Continue →' : '🚀 Launch Campaign'}
             </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={!!assignCamp} onClose={() => setAssignCamp(null)} title={`Assign users · ${assignCamp?.name || ''}`}>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">Users assigned here can use manual and auto calling on this campaign.</p>
+          {agents.length === 0 && <p className="text-sm text-slate-400">No users available to assign.</p>}
+          <div className="max-h-72 overflow-y-auto space-y-1">
+            {agents.map((agent) => {
+              const checked = assignIds.includes(agent.id);
+              return (
+                <label key={agent.id} className="flex items-center gap-3 p-3 rounded-xl border border-[#E2E8F0] cursor-pointer hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    className="accent-[#4F46E5]"
+                    checked={checked}
+                    onChange={() => setAssignIds((prev) => checked ? prev.filter((id) => id !== agent.id) : [...prev, agent.id])}
+                  />
+                  <span className="text-sm font-medium text-slate-800">{agent.display_name}</span>
+                  <span className="ml-auto text-xs text-slate-400">{agent.email}</span>
+                </label>
+              );
+            })}
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setAssignCamp(null)}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={assignBusy}
+              onClick={async () => {
+                if (!assignCamp) return;
+                setAssignBusy(true);
+                try {
+                  await api(`/api/campaigns/${assignCamp.id}/`, { method: 'PATCH', body: JSON.stringify({ assigned_users: assignIds }) });
+                  showToast('Users assigned', 'success');
+                  setAssignCamp(null);
+                  load();
+                } catch (err) {
+                  showToast(err instanceof Error ? err.message : 'Could not assign users', 'error');
+                } finally {
+                  setAssignBusy(false);
+                }
+              }}
+            >
+              Save assignment
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal open={!!leadCamp} onClose={() => { setLeadCamp(null); setLeadBoard(null); }} title={`Leads · ${leadCamp?.name || ''}`} size="xl">
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">Same uploaded rows. Call status, duration, agent and disposition update here. Other columns stay as uploaded.</p>
+          <div className="overflow-auto max-h-[28rem] border border-[#E2E8F0] rounded-xl">
+            <table className="min-w-full text-xs">
+              <thead className="bg-slate-50 text-slate-500 sticky top-0">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium">Lead</th>
+                  <th className="text-left px-3 py-2 font-medium">{leadBoard?.mobile_column || 'Mobile'}</th>
+                  {(leadBoard?.columns || []).map((col) => (
+                    <th key={col} className="text-left px-3 py-2 font-medium">{col}</th>
+                  ))}
+                  {leadCamp?.campaign_type === 'ibr' && <th className="text-left px-3 py-2 font-medium">Speech</th>}
+                  <th className="text-left px-3 py-2 font-medium">Status</th>
+                  <th className="text-left px-3 py-2 font-medium">Duration</th>
+                  <th className="text-left px-3 py-2 font-medium">Agent</th>
+                  <th className="text-left px-3 py-2 font-medium">Disposition</th>
+                  <th className="text-left px-3 py-2 font-medium">Attempts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(leadBoard?.leads || []).map((lead) => (
+                  <React.Fragment key={lead.id}>
+                    <tr className="border-t border-[#E2E8F0] cursor-pointer hover:bg-slate-50" onClick={() => setOpenLead(openLead === lead.id ? null : lead.id)}>
+                      <td className="px-3 py-2 font-mono text-slate-500">#{lead.id}</td>
+                      <td className="px-3 py-2 font-medium text-slate-800">{lead.phone}</td>
+                      {(leadBoard?.columns || []).map((col) => (
+                        <td key={col} className="px-3 py-2 text-slate-600">{(lead.extra_data && col in lead.extra_data ? lead.extra_data[col] : col.toLowerCase() === 'name' ? lead.name : '') || '—'}</td>
+                      ))}
+                      {leadCamp?.campaign_type === 'ibr' && <td className="px-3 py-2">{lead.tts_status || '—'}{lead.tts_error ? ` (${lead.tts_error})` : ''}</td>}
+                      <td className="px-3 py-2"><Badge variant={statusVariant(lead.lead_status || 'new')}>{prettyStatus(lead.lead_status || 'new')}</Badge></td>
+                      <td className="px-3 py-2 font-mono">{lead.last_duration || '00:00'}</td>
+                      <td className="px-3 py-2">{lead.last_agent || '—'}</td>
+                      <td className="px-3 py-2">{lead.last_disposition || '—'}</td>
+                      <td className="px-3 py-2">{lead.attempt_count || 0}</td>
+                    </tr>
+                    {openLead === lead.id && (
+                      <tr className="bg-slate-50">
+                        <td colSpan={8 + (leadBoard?.columns.length || 0)} className="px-3 py-2 text-slate-500">
+                          {(lead.calls || []).length === 0 && 'No call attempts yet.'}
+                          {(lead.calls || []).map((call) => (
+                            <div key={call.id} className="py-1">
+                              Attempt #{call.id} · {call.agent || '—'} · {call.outcome || call.disposition || 'pending'} · {call.duration} · {String(call.started_at || '').replace('T', ' ').slice(0, 16)}
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                ))}
+                {leadBoard && leadBoard.leads.length === 0 && (
+                  <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No leads uploaded for this campaign.</td></tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       </Modal>

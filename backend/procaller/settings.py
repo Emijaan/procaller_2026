@@ -1,4 +1,5 @@
 import os
+import sys
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -7,6 +8,9 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
+_piper_deps = BASE_DIR.parent / "pydeps"
+if _piper_deps.is_dir() and str(_piper_deps) not in sys.path:
+    sys.path.insert(0, str(_piper_deps))
 
 SECRET_KEY = os.getenv("SECRET_KEY", "procaller-dev-secret-change-me")
 DEBUG = os.getenv("DEBUG", "1") == "1"
@@ -128,7 +132,7 @@ CHANNEL_LAYERS = {
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "accounts.authentication.EpochJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
@@ -161,3 +165,6 @@ ASTERISK = {
     "ORIGINATE_STYLE": os.getenv("ASTERISK_ORIGINATE_STYLE", "vicibox"),
     "CHANNEL_TECH": os.getenv("ASTERISK_CHANNEL_TECH", "sip"),
 }
+
+PIPER_VOICES = Path(os.getenv("PIPER_VOICES", BASE_DIR.parent / "piper-voices"))
+PIPER_DEFAULT_VOICE = os.getenv("PIPER_DEFAULT_VOICE", "en_US-lessac-low")

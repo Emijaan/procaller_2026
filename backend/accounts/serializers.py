@@ -23,6 +23,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
             "max_managers",
             "max_admins",
             "max_users",
+            "ibr_enabled",
             "managers_used",
             "admins_used",
             "users_used",
@@ -36,6 +37,9 @@ class UserSerializer(serializers.ModelSerializer):
     role_normalized = serializers.CharField(source="normalized_role", read_only=True)
     permissions = serializers.SerializerMethodField()
     reports_to_name = serializers.CharField(source="reports_to.display_name", read_only=True, default="")
+    campaign_ids = serializers.SerializerMethodField()
+    campaign_names = serializers.SerializerMethodField()
+    gsm_port = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -61,7 +65,20 @@ class UserSerializer(serializers.ModelSerializer):
             "max_users",
             "is_active",
             "is_superuser",
+            "campaign_ids",
+            "campaign_names",
+            "gsm_port",
         )
+
+    def get_gsm_port(self, obj):
+        port = getattr(obj, "gsm_port", None)
+        return port.id if port else None
+
+    def get_campaign_ids(self, obj):
+        return [camp.id for camp in obj.assigned_campaigns.all()]
+
+    def get_campaign_names(self, obj):
+        return [camp.name for camp in obj.assigned_campaigns.all()]
 
     def get_permissions(self, obj):
         codes = set(ROLE_PERMISSIONS.get(role_of(obj), []))
@@ -120,6 +137,12 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
 class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
     username_field = "email"
+
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token["epoch"] = int(getattr(user, "auth_epoch", 0) or 0)
+        return token
 
     def validate(self, attrs):
         data = super().validate(attrs)

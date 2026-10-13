@@ -17,6 +17,10 @@ class Campaign(models.Model):
         COMPLETED = "completed", "Completed"
         ARCHIVED = "archived", "Archived"
 
+    class CampaignType(models.TextChoices):
+        LIVE = "live", "Live agent"
+        IBR = "ibr", "IBR broadcast"
+
     class DialMethod(models.TextChoices):
         MANUAL = "manual", "Manual"
         PREVIEW = "preview", "Preview"
@@ -28,6 +32,9 @@ class Campaign(models.Model):
     name = models.CharField(max_length=160)
     description = models.TextField(blank=True, default="")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT)
+    campaign_type = models.CharField(max_length=16, choices=CampaignType.choices, default=CampaignType.LIVE)
+    tts_prompt = models.TextField(blank=True, default="")
+    tts_voice = models.CharField(max_length=80, blank=True, default="")
     dial_method = models.CharField(max_length=20, choices=DialMethod.choices, default=DialMethod.MANUAL)
     caller_id = models.CharField(max_length=32, blank=True, default="")
     caller_id_name = models.CharField(max_length=80, blank=True, default="ProCaller")
@@ -51,6 +58,7 @@ class Campaign(models.Model):
     code = models.CharField(max_length=32, blank=True, default="")
     wrap_up_seconds = models.PositiveIntegerField(default=30)
     dial_ratio = models.PositiveSmallIntegerField(default=1)
+    auto_running = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

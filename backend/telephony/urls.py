@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .gateway_views import GatewayListCreateView, GsmPortListCreateView, InboundRouteView, PortGroupListCreateView
 from .views import (
     ActiveCallView,
     AgentModeView,
@@ -36,4 +37,8 @@ urlpatterns = [
     path("recordings/<int:pk>/file/", RecordingFileView.as_view(), name="recording-file"),
     path("agent/mode/", AgentModeView.as_view(), name="agent-mode"),
     path("agent/today/", AgentTodayView.as_view(), name="agent-today"),
+    path("telephony/gateways/", GatewayListCreateView.as_view(), name="gsm-gateways"),
+    path("telephony/port-groups/", PortGroupListCreateView.as_view(), name="gsm-port-groups"),
+    path("telephony/ports/", GsmPortListCreateView.as_view(), name="gsm-ports"),
+    path("telephony/inbound/", InboundRouteView.as_view(), name="gsm-inbound"),
 ]

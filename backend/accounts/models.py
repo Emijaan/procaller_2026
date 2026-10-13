@@ -42,6 +42,7 @@ class Organization(models.Model):
     max_managers = models.PositiveIntegerField(default=10)
     max_admins = models.PositiveIntegerField(default=30)
     max_users = models.PositiveIntegerField(default=300)
+    ibr_enabled = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -87,6 +88,7 @@ class User(AbstractUser):
     )
     extra_permissions = models.JSONField(default=list, blank=True)
     denied_permissions = models.JSONField(default=list, blank=True)
+    auth_epoch = models.PositiveIntegerField(default=0)
     max_admins = models.PositiveIntegerField(default=5)
     max_users = models.PositiveIntegerField(default=50)
 

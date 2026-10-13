@@ -157,3 +157,118 @@ class TenantIsolationTests(TestCase):
         self.assertFalse(paused.data["is_active"])
         removed = root.delete(f"/api/agencies/{pk}/")
         self.assertEqual(removed.status_code, 200)
+
+    def test_user_create_requires_campaign(self):
+        root = self._login("root@test.com")
+        missing = root.post(
+            "/api/staff/",
+            {
+                "email": "caller@a.com",
+                "password": "x",
+                "role": "user",
+                "organization": self.a.id,
+            },
+            format="json",
+        )
+        self.assertEqual(missing.status_code, 400)
+        self.assertIn("campaign", str(missing.data).lower())
+        created = root.post(
+            "/api/staff/",
+            {
+                "email": "caller@a.com",
+                "password": "x",
+                "role": "user",
+                "organization": self.a.id,
+                "campaign": self.camp_a.id,
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(created.data["campaign_ids"], [self.camp_a.id])
+        self.assertIn("A Camp", created.data["campaign_names"])
+        user = User.objects.get(pk=created.data["id"])
+        self.assertTrue(self.camp_a.assigned_users.filter(pk=user.id).exists())
+
+    def test_agency_cannot_cross_into_another_agency_by_id(self):
+        from telephony.models import Call
+
+        client = self._login("a@test.com")
+        listed = client.get("/api/agencies/")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual([row["id"] for row in listed.data], [self.a.id])
+        other_agency = client.get(f"/api/agencies/{self.b.id}/")
+        self.assertIn(other_agency.status_code, (403, 404))
+        other_staff = client.get(f"/api/staff/{self.agency_b.id}/")
+        self.assertEqual(other_staff.status_code, 404)
+
+        created = client.post(
+            "/api/staff/",
+            {
+                "email": "planted@b.com",
+                "password": "x",
+                "role": "manager",
+                "organization": self.b.id,
+                "reports_to": self.agency_b.id,
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 403, created.data)
+        self.assertFalse(User.objects.filter(email="planted@b.com").exists())
+
+        own = client.post(
+            "/api/staff/",
+            {
+                "email": "mgr-a@test.com",
+                "password": "x",
+                "role": "manager",
+                "first_name": "In",
+                "organization": self.a.id,
+            },
+            format="json",
+        )
+        self.assertEqual(own.status_code, 201, own.data)
+        moved = client.patch(
+            f"/api/staff/{own.data['id']}/",
+            {"organization": self.b.id, "reports_to": self.agency_b.id, "extra_permissions": ["create_agency"]},
+            format="json",
+        )
+        self.assertEqual(moved.status_code, 403, moved.data)
+        kept = User.objects.get(pk=own.data["id"])
+        self.assertEqual(kept.organization_id, self.a.id)
+        self.assertNotIn("create_agency", kept.extra_permissions or [])
+
+        lead = client.post(
+            "/api/leads/",
+            {"name": "Stolen", "phone": "9111111111", "campaign": self.camp_b.id, "owner": self.agency_b.id},
+            format="json",
+        )
+        self.assertEqual(lead.status_code, 404, lead.data)
+        self.assertFalse(Contact.objects.filter(phone="9111111111").exists())
+
+        call_b = Call.objects.create(
+            agent=self.agency_b,
+            campaign=self.camp_b,
+            phone_number="9000000002",
+            callerid_token="iso-b",
+        )
+        answered = client.post(f"/api/calls/{call_b.id}/answer/", {}, format="json")
+        self.assertEqual(answered.status_code, 404)
+        uploaded = client.post(f"/api/calls/{call_b.id}/recording/", {}, format="multipart")
+        self.assertEqual(uploaded.status_code, 404)
+        session = client.post("/api/telephony/session/", {"campaign_id": self.camp_b.id}, format="json")
+        self.assertEqual(session.status_code, 404)
+        mode = client.post("/api/agent/mode/", {"mode": "manual", "campaign_id": self.camp_b.id}, format="json")
+        self.assertEqual(mode.status_code, 404)
+
+        shared = Campaign.objects.create(name="Unassigned", agency=None)
+        names = [row["name"] for row in client.get("/api/campaigns/").data]
+        self.assertNotIn("Unassigned", names)
+        root = self._login("root@test.com")
+        root_names = [row["name"] for row in root.get("/api/campaigns/").data]
+        self.assertIn("Unassigned", root_names)
+        self.assertIn("B Camp", root_names)
+        both = root.get("/api/staff/")
+        emails = [row["email"] for row in both.data]
+        self.assertIn("a@test.com", emails)
+        self.assertIn("b@test.com", emails)
+        self.assertEqual(shared.agency_id, None)

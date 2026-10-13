@@ -29,6 +29,9 @@ class CampaignSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "status",
+            "campaign_type",
+            "tts_prompt",
+            "tts_voice",
             "dial_method",
             "caller_id",
             "caller_id_name",
@@ -49,6 +52,7 @@ class CampaignSerializer(serializers.ModelSerializer):
             "code",
             "wrap_up_seconds",
             "dial_ratio",
+            "auto_running",
             "created_at",
             "updated_at",
         )

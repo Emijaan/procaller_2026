@@ -1,4 +1,3 @@
-from django.db.models import Count, Q
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -15,6 +14,7 @@ from .access import (
     is_super_admin,
     require_perm,
     role_of,
+    scoped_calls,
     scoped_campaigns,
     scoped_leads,
     scoped_users,
@@ -29,7 +29,15 @@ from .serializers import (
     UserSerializer,
     UserWriteSerializer,
 )
-from .services import create_account, usage_for_agency, write_audit
+from .services import (
+    assign_staff_campaigns,
+    campaign_ids_from_payload,
+    create_account,
+    guard_staff_write,
+    require_calling_campaigns,
+    usage_for_agency,
+    write_audit,
+)
 
 
 class LoginView(TokenObtainPairView):
@@ -145,6 +153,25 @@ class AgencyDetailView(APIView):
         for field in ("name", "timezone", "subscription_status", "is_active"):
             if field in request.data:
                 setattr(org, field, request.data[field])
+        if "ibr_enabled" in request.data or "port_group" in request.data:
+            if not is_super_admin(request.user):
+                return Response({"detail": "Only Super Admin can change IBR or GSM ports"}, status=403)
+        if "ibr_enabled" in request.data:
+            value = request.data.get("ibr_enabled")
+            org.ibr_enabled = value.lower() in {"1", "true", "yes"} if isinstance(value, str) else bool(value)
+        if "port_group" in request.data:
+            from telephony.models import PortGroup
+
+            raw = request.data.get("port_group")
+            PortGroup.objects.filter(agency=org).update(agency=None)
+            if raw:
+                group = PortGroup.objects.filter(pk=raw, is_active=True).first()
+                if not group:
+                    return Response({"detail": "Port group not found"}, status=400)
+                if group.agency_id and group.agency_id != org.id:
+                    return Response({"detail": "Port group is assigned to another agency"}, status=400)
+                group.agency = org
+                group.save(update_fields=["agency"])
         for field in ("max_managers", "max_admins", "max_users"):
             if field in request.data:
                 setattr(org, field, int(request.data[field]))
@@ -188,7 +215,7 @@ class StaffListCreateView(APIView):
 
     def get(self, request):
         role = request.query_params.get("role")
-        qs = scoped_users(request.user)
+        qs = scoped_users(request.user).prefetch_related("assigned_campaigns")
         if role:
             aliases = [role]
             if role == "manager":
@@ -204,10 +231,17 @@ class StaffListCreateView(APIView):
         org = None
         if request.data.get("organization"):
             org = Organization.objects.filter(pk=request.data["organization"]).first()
+            own = agency_of(request.user)
+            if not is_super_admin(request.user) and (not own or not org or org.id != own.id):
+                return Response({"detail": "Cannot create accounts in another agency"}, status=403)
         reports_to = None
         if request.data.get("reports_to"):
             reports_to = scoped_users(request.user).filter(pk=request.data["reports_to"]).first()
+            if not reports_to:
+                return Response({"detail": "Manager is not in your agency"}, status=403)
+        campaign_ids = campaign_ids_from_payload(request.data) or []
         try:
+            require_calling_campaigns(role, campaign_ids)
             user = create_account(
                 request.user,
                 email=request.data.get("email"),
@@ -224,7 +258,15 @@ class StaffListCreateView(APIView):
                 max_admins=int(request.data.get("max_admins") or 5),
                 max_users=int(request.data.get("max_users") or 50),
             )
+            assign_staff_campaigns(request.user, user, campaign_ids, required=role in {User.Role.USER, User.Role.AGENT})
         except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        try:
+            from telephony.channels import assign_user_port
+
+            assign_user_port(user, request.data.get("gsm_port"))
+        except ValueError as exc:
+            user.delete()
             return Response({"detail": str(exc)}, status=400)
         write_audit(request.user, "user_create", "user", user.id, request, {"role": role})
         return Response(UserSerializer(user).data, status=201)
@@ -259,10 +301,26 @@ class StaffDetailView(APIView):
         serializer = UserWriteSerializer(target, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         password = serializer.validated_data.pop("password", None)
+        try:
+            guard_staff_write(request.user, target, serializer.validated_data)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=403)
         user = serializer.save()
         if password:
             user.set_password(password)
             user.save(update_fields=["password"])
+        campaign_ids = campaign_ids_from_payload(request.data)
+        try:
+            next_role = user.role
+            if campaign_ids is not None:
+                require_calling_campaigns(next_role, campaign_ids)
+                assign_staff_campaigns(request.user, user, campaign_ids, required=next_role in {User.Role.USER, User.Role.AGENT})
+            if "gsm_port" in request.data:
+                from telephony.channels import assign_user_port
+
+                assign_user_port(user, request.data.get("gsm_port"))
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
         write_audit(request.user, "user_update", "user", user.id, request, {"role": user.role})
         return Response(UserSerializer(user).data)
 
@@ -302,16 +360,9 @@ class DashboardView(APIView):
         users = scoped_users(request.user)
         campaigns = scoped_campaigns(request.user, Campaign.objects.all())
         leads = scoped_leads(request.user, Contact.objects.all())
-        calls = Call.objects.all()
-        if not is_super_admin(request.user):
-            org = agency_of(request.user)
-            if org:
-                calls = calls.filter(Q(agent__organization=org) | Q(campaign__agency=org))
-            else:
-                calls = calls.filter(agent=request.user)
-            if role_of(request.user) == User.Role.USER:
-                calls = calls.filter(agent=request.user)
-                leads = leads.filter(owner=request.user)
+        calls = scoped_calls(request.user, Call.objects.all())
+        if role_of(request.user) == User.Role.USER:
+            leads = leads.filter(owner=request.user)
         usage = usage_for_agency(agency_of(request.user)) if agency_of(request.user) else None
         from telephony.models import AgentModeSession
 

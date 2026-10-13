@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.access import agency_of, require_perm, scoped_leads, scoped_users
+from accounts.access import agency_of, is_super_admin, require_perm, scoped_campaigns, scoped_leads, scoped_users
 from accounts.services import write_audit
 
 from .models import Contact, FollowUp
@@ -35,15 +35,34 @@ class ContactListView(APIView):
         phone = (request.data.get("phone") or request.data.get("mobile") or "").strip()
         if not phone:
             return Response({"detail": "Mobile is required"}, status=400)
+        from campaigns.models import Campaign
+
+        campaign = None
+        if request.data.get("campaign"):
+            campaign = scoped_campaigns(request.user, Campaign.objects.filter(pk=request.data["campaign"])).first()
+            if not campaign:
+                return Response({"detail": "Not found"}, status=404)
+        owner = None
+        if request.data.get("owner"):
+            owner = scoped_users(request.user).filter(pk=request.data["owner"]).first()
+            if not owner:
+                return Response({"detail": "Not found"}, status=404)
+        agency = agency_of(request.user)
+        if is_super_admin(request.user) and campaign and campaign.agency_id:
+            agency = campaign.agency
+        if campaign and agency and campaign.agency_id and campaign.agency_id != agency.id:
+            return Response({"detail": "Campaign is not in your agency"}, status=403)
+        if owner and agency and owner.organization_id != agency.id:
+            return Response({"detail": "User is not in your agency"}, status=403)
         contact = Contact.objects.create(
             name=request.data.get("name") or phone,
             phone=phone,
             email=request.data.get("email") or "",
             company=request.data.get("company") or "",
             extra_data=request.data.get("extra_data") or {},
-            campaign_id=request.data.get("campaign") or None,
-            owner_id=request.data.get("owner") or None,
-            agency=agency_of(request.user),
+            campaign=campaign,
+            owner=owner,
+            agency=agency,
             lead_status=request.data.get("lead_status") or Contact.LeadStatus.NEW,
             comments=request.data.get("comments") or "",
         )
@@ -68,10 +87,14 @@ class ContactDetailView(APIView):
                 setattr(contact, field, request.data[field])
         if "owner" in request.data:
             require_perm(request.user, "assign_leads")
-            owner = scoped_users(request.user).filter(pk=request.data["owner"]).first()
-            contact.owner = owner
-            if owner:
+            if request.data["owner"]:
+                owner = scoped_users(request.user).filter(pk=request.data["owner"]).first()
+                if not owner:
+                    return Response({"detail": "Not found"}, status=404)
+                contact.owner = owner
                 contact.lead_status = Contact.LeadStatus.ASSIGNED
+            else:
+                contact.owner = None
         if "extra_data" in request.data and isinstance(request.data["extra_data"], dict):
             contact.extra_data = request.data["extra_data"]
         if "next_callback_at" in request.data:

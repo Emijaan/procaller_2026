@@ -15,3 +15,6 @@ class TelephonyConfig(AppConfig):
 
         start_listener()
         start_event_listener()
+        from .hopper import start_hopper
+
+        start_hopper()

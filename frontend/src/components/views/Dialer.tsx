@@ -146,6 +146,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const noLeads = useRef(false);
   const previewTries = useRef(0);
   const dialRatioRef = useRef(1);
+  const autoRunRef = useRef(false);
+  const joinedRef = useRef<number | ''>('');
   const liveCallsRef = useRef<CallRecord[]>([]);
   const backspaceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialInputRef = useRef<HTMLInputElement | null>(null);
@@ -199,6 +201,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
 
   const refreshToday = useCallback(() => {
     api<typeof todayTimes>('/api/agent/today/').then((data) => setTodayTimes((prev) => ({ ...prev, ...data }))).catch(() => undefined);
+    api<Campaign[]>('/api/campaigns/').then(setCampaigns).catch(() => undefined);
   }, []);
 
   useEffect(() => { refreshToday(); const t = window.setInterval(refreshToday, 30000); return () => window.clearInterval(t); }, [refreshToday]);
@@ -258,6 +261,10 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
 
   const changeMode = async (next: DialerMode) => {
     if (next === 'progressive') return;
+    if ((next === 'manual' || next === 'preview') && !campaignId) {
+      showToast('You must be assigned to a campaign before calling', 'error');
+      return;
+    }
     const mapped = next === 'preview' ? 'preview' : next;
     try {
       const data = await api<typeof todayTimes>('/api/agent/mode/', {
@@ -281,8 +288,9 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   };
 
   useEffect(() => {
-    api('/api/agent/mode/', { method: 'POST', body: JSON.stringify({ mode: 'manual', campaign_id: campaignId || undefined }) }).catch(() => undefined);
-  }, []);
+    if (!campaignId) return;
+    api('/api/agent/mode/', { method: 'POST', body: JSON.stringify({ mode: modeRef.current === 'preview' ? 'preview' : 'manual', campaign_id: campaignId, dial_ratio: dialRatioRef.current }) }).catch(() => undefined);
+  }, [campaignId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -332,6 +340,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     if (call.notes) setNote(call.notes);
   }, [phone]);
 
+  autoRunRef.current = !!campaigns.find((camp) => camp.id === campaignId)?.auto_running;
+
   useAgentSocket((payload) => {
     const call = payload?.call as CallRecord | undefined;
     if (call) {
@@ -345,6 +355,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       }
     }
     if (payload?.type === 'call.dropped') return;
+    if (payload?.type === 'call.started' && call) applyCall(call);
     if (payload?.type === 'call.ringing' && call) {
       applyCall(call);
       if (sessionRef.current?.mode !== 'asterisk' && dialRatioRef.current <= 1) phone.playRingtone();
@@ -369,7 +380,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       phone.stopRingtone();
       phone.stopHoldMusic().catch(() => undefined);
       phone.stopLoopback();
-      phone.hangupCall();
+      const stayInCampaign = autoRunRef.current && sessionRef.current?.mode === 'asterisk';
+      if (!stayInCampaign) phone.hangupCall();
       setCallState('ended');
       if (payload.call?.outcome === 'Busy') {
         showToast('Gateway returned busy (SIP 486). Check Synway ports/SIM.', 'error');
@@ -402,6 +414,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
 
   useEffect(() => {
     if (mode !== 'preview' || !phoneReady || callState !== 'idle' || showDisposition || wrapHold) return;
+    if (campaigns.find((camp) => camp.id === campaignId)?.auto_running) return;
     if (previewBusy.current || noLeads.current || previewTries.current >= 3) return;
     let cancelled = false;
     previewBusy.current = true;
@@ -416,9 +429,28 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       }
     })();
     return () => { cancelled = true; };
-  }, [mode, phoneReady, callState, showDisposition, wrapHold, campaignId, loadNextLead]);
+  }, [mode, phoneReady, callState, showDisposition, wrapHold, campaignId, campaigns, loadNextLead]);
+
+  useEffect(() => {
+    if (mode !== 'preview') {
+      joinedRef.current = '';
+      return;
+    }
+    if (!phoneReady) return;
+    const camp = campaigns.find((row) => row.id === campaignId);
+    if (!camp?.auto_running || joinedRef.current === campaignId) return;
+    const sip = sessionRef.current?.sip;
+    if (sessionRef.current?.mode === 'asterisk' && sip) {
+      joinedRef.current = campaignId;
+      phone.joinConference(sip).catch(() => { joinedRef.current = ''; });
+    }
+  }, [mode, phoneReady, campaignId, campaigns, phone]);
 
   const startCall = async (overrideNumber?: string, contactOverride?: Contact) => {
+    if (!campaignId) {
+      showToast('You must be assigned to a campaign before calling', 'error');
+      return;
+    }
     const lead = contactOverride || currentContact;
     const number = sanitizeDial(overrideNumber ?? (mode === 'manual' ? dialNumber : lead.phone));
     if (!number) {
@@ -771,10 +803,19 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             onChange={(e) => setCampaignId(e.target.value ? Number(e.target.value) : '')}
             className="text-sm font-medium text-slate-800 bg-transparent border-none focus:outline-none cursor-pointer"
           >
+            {campaigns.length === 0 && <option value="">No campaign assigned</option>}
             {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
+          {campaigns.length === 0 && (
+            <span className="text-xs text-amber-600 font-medium">Assign this user to a campaign to enable calling</span>
+          )}
         </div>
-        {mode === 'preview' && (
+        {mode === 'preview' && campaigns.find((camp) => camp.id === campaignId)?.auto_running && (
+          <span className="text-xs font-medium text-indigo-600">
+            Campaign auto · {campaigns.find((camp) => camp.id === campaignId)?.dial_ratio || 1} threads · waiting for an answered call
+          </span>
+        )}
+        {mode === 'preview' && !campaigns.find((camp) => camp.id === campaignId)?.auto_running && (
           <label className="flex items-center gap-2 text-sm text-slate-500">
             <span>Ratio</span>
             <input

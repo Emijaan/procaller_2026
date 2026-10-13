@@ -46,9 +46,13 @@ def release_agent_reservations(user):
 
 
 def set_agent_mode(user, mode, request=None, campaign=None, dial_ratio=None):
+    from accounts.access import assert_can_use_campaign
+
     allowed = {choice[0] for choice in AgentModeSession.Mode.choices}
     if mode not in allowed:
         raise ValueError("Mode must be manual, preview, break, or offline")
+    if mode in {AgentModeSession.Mode.MANUAL, AgentModeSession.Mode.PREVIEW}:
+        assert_can_use_campaign(user, campaign)
     previous = current_mode(user)
     close_open_modes(user)
     ip = None

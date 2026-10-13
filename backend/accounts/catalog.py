@@ -26,6 +26,7 @@ ROLE_PERMISSIONS = {
         "manage_agency",
         "create_manager",
         "manage_manager",
+        "create_admin",
         "manage_admin",
         "manage_user",
         "create_campaign",

@@ -14,6 +14,8 @@ type AgencyForm = {
   max_users: string;
   subscription_status: string;
   is_active: boolean;
+  ibr_enabled: boolean;
+  port_group: string;
 };
 
 const emptyForm: AgencyForm = {
@@ -25,6 +27,8 @@ const emptyForm: AgencyForm = {
   max_users: '300',
   subscription_status: 'active',
   is_active: true,
+  ibr_enabled: false,
+  port_group: '',
 };
 
 export default function Agencies({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
@@ -35,6 +39,10 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
   const [confirm, setConfirm] = useState<Organization | null>(null);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<AgencyForm>(emptyForm);
+  const [groups, setGroups] = useState<{ id: number; name: string; agency: number | null; gateway: number }[]>([]);
+  const [gateways, setGateways] = useState<{ id: number; name: string }[]>([]);
+  const [channel, setChannel] = useState({ name: '', dial_prefix: '', caller_id: '' });
+  const isSuper = user?.is_superuser || (user?.role_normalized || user?.role) === 'super_admin';
 
   const load = () => api<Organization[]>('/api/agencies/').then(setRows).catch((err) => showToast(err.message, 'error'));
   useEffect(() => { load(); }, []);
@@ -47,6 +55,14 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
 
   const openEdit = (org: Organization) => {
     setEditing(org);
+    if (isSuper) {
+      api<{ id: number; name: string; agency: number | null; gateway: number }[]>('/api/telephony/port-groups/').then((rows) => {
+        setGroups(rows);
+        const own = rows.find((row) => row.agency === org.id);
+        setForm((prev) => ({ ...prev, port_group: own ? String(own.id) : '' }));
+      }).catch(() => setGroups([]));
+      api<{ id: number; name: string }[]>('/api/telephony/gateways/').then(setGateways).catch(() => setGateways([]));
+    }
     setForm({
       name: org.name,
       email: '',
@@ -56,6 +72,8 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
       max_users: String(org.max_users ?? 300),
       subscription_status: org.subscription_status || 'active',
       is_active: org.is_active !== false,
+      ibr_enabled: Boolean(org.ibr_enabled),
+      port_group: '',
     });
     setOpen(true);
   };
@@ -77,6 +95,7 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
             max_users: Number(form.max_users),
             subscription_status: form.subscription_status,
             is_active: form.is_active,
+            ...(isSuper ? { ibr_enabled: form.ibr_enabled, port_group: form.port_group ? Number(form.port_group) : null } : {}),
           }),
         });
         showToast('Agency updated', 'success');
@@ -158,6 +177,7 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
                   <p className="text-xs text-slate-400">{org.timezone || 'Asia/Kolkata'}</p>
                 </div>
                 <Badge variant={org.is_active === false ? 'danger' : 'success'}>{org.is_active === false ? 'inactive' : (org.subscription_status || 'active')}</Badge>
+                {org.ibr_enabled && <Badge variant="info">IBR</Badge>}
               </div>
               <div className="grid grid-cols-3 gap-2 text-center mb-4">
                 <div className="bg-slate-50 rounded-lg p-2">
@@ -200,6 +220,58 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
             <Input label="Admin limit" value={form.max_admins} onChange={(e) => setForm({ ...form, max_admins: e.target.value })} />
             <Input label="User limit" value={form.max_users} onChange={(e) => setForm({ ...form, max_users: e.target.value })} />
           </div>
+          {editing && isSuper && (
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={form.ibr_enabled} onChange={(e) => setForm({ ...form, ibr_enabled: e.target.checked })} />
+              Enable IBR broadcast
+            </label>
+          )}
+          {editing && isSuper && (
+            <div className="space-y-2">
+              <Select
+                label="GSM port group"
+                value={form.port_group}
+                onChange={(e) => setForm({ ...form, port_group: e.target.value })}
+                options={[{ value: '', label: 'None' }, ...groups.map((row) => ({ value: String(row.id), label: row.name }))]}
+              />
+              <div className="grid grid-cols-3 gap-2">
+                <Input label="Channel" value={channel.name} onChange={(e) => setChannel({ ...channel, name: e.target.value })} />
+                <Input label="Dial prefix" value={channel.dial_prefix} onChange={(e) => setChannel({ ...channel, dial_prefix: e.target.value })} />
+                <Input label="SIM caller ID" value={channel.caller_id} onChange={(e) => setChannel({ ...channel, caller_id: e.target.value })} />
+              </div>
+              <Button variant="outline" type="button" onClick={async () => {
+                if (!channel.name.trim()) {
+                  showToast('Channel name is required', 'error');
+                  return;
+                }
+                try {
+                  let groupId = form.port_group ? Number(form.port_group) : 0;
+                  if (!groupId) {
+                    const gateway = gateways[0];
+                    if (!gateway) {
+                      showToast('No GSM gateway is configured', 'error');
+                      return;
+                    }
+                    const created = await api<{ id: number; name: string }>('/api/telephony/port-groups/', {
+                      method: 'POST',
+                      body: JSON.stringify({ gateway: gateway.id, name: `${form.name || 'Agency'} ports` }),
+                    });
+                    groupId = created.id;
+                    setGroups((prev) => [...prev, { id: created.id, name: created.name, agency: editing?.id || null, gateway: gateway.id }]);
+                    setForm({ ...form, port_group: String(created.id) });
+                  }
+                  await api('/api/telephony/ports/', {
+                    method: 'POST',
+                    body: JSON.stringify({ group: groupId, name: channel.name, dial_prefix: channel.dial_prefix, caller_id: channel.caller_id }),
+                  });
+                  setChannel({ name: '', dial_prefix: '', caller_id: '' });
+                  showToast('GSM channel added. Save the agency to keep this group.', 'success');
+                } catch (err) {
+                  showToast(err instanceof Error ? err.message : 'Could not add the channel', 'error');
+                }
+              }}>Add channel</Button>
+            </div>
+          )}
           {editing && (
             <Select
               label="Status"

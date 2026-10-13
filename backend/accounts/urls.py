@@ -1,6 +1,14 @@
 from django.urls import path
 
-from telephony.reports import CampaignReportView, DailyReportView, LiveActionView, LiveAgentsView, ReportExportView
+from telephony.reports import (
+    CallReportView,
+    CampaignReportView,
+    DailyReportView,
+    LiveActionView,
+    LiveAgentsView,
+    ReportExportView,
+    ReportFilterOptionsView,
+)
 
 from .views import (
     AgencyDetailView,
@@ -22,5 +30,7 @@ urlpatterns = [
     path("live/actions/", LiveActionView.as_view(), name="live-actions"),
     path("reports/daily/", DailyReportView.as_view(), name="report-daily"),
     path("reports/campaigns/", CampaignReportView.as_view(), name="report-campaigns"),
+    path("reports/calls/", CallReportView.as_view(), name="report-calls"),
+    path("reports/filters/", ReportFilterOptionsView.as_view(), name="report-filters"),
     path("reports/export/", ReportExportView.as_view(), name="report-export"),
 ]

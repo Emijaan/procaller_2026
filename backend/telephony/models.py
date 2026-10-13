@@ -50,6 +50,11 @@ class Call(models.Model):
         BUSY = "Busy", "Busy"
         FAILED = "Failed", "Failed"
         CANCELLED = "Cancelled", "Cancelled"
+        UNKNOWN = "Unknown", "Unknown"
+        SWITCH_OFF = "Switch Off", "Switch Off"
+        NOT_REACHABLE = "Not Reachable", "Not Reachable"
+        OUT_OF_SERVICE = "Out of Service Area", "Out of Service Area"
+        INCOMING_NOT_ALLOWED = "Incoming Calls Not Allowed", "Incoming Calls Not Allowed"
 
     agent = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="calls")
     contact = models.ForeignKey("crm.Contact", null=True, blank=True, on_delete=models.SET_NULL, related_name="calls")
@@ -58,7 +63,7 @@ class Call(models.Model):
     phone_number = models.CharField(max_length=32)
     direction = models.CharField(max_length=16, choices=Direction.choices, default=Direction.OUTBOUND)
     state = models.CharField(max_length=16, choices=State.choices, default=State.INITIATING)
-    outcome = models.CharField(max_length=20, choices=Outcome.choices, blank=True, default="")
+    outcome = models.CharField(max_length=64, choices=Outcome.choices, blank=True, default="")
     disposition = models.CharField(max_length=64, blank=True, default="")
     notes = models.TextField(blank=True, default="")
     muted = models.BooleanField(default=False)
@@ -76,9 +81,12 @@ class Call(models.Model):
     ended_at = models.DateTimeField(null=True, blank=True)
     duration_seconds = models.PositiveIntegerField(default=0)
     hangup_cause = models.CharField(max_length=32, blank=True, default="")
+    cause_code = models.CharField(max_length=16, blank=True, default="")
+    cause_text = models.CharField(max_length=120, blank=True, default="")
     hold_seconds = models.PositiveIntegerField(default=0)
     hold_started_at = models.DateTimeField(null=True, blank=True)
     dial_batch = models.CharField(max_length=40, blank=True, default="", db_index=True)
+    gsm_port = models.ForeignKey("telephony.GsmPort", null=True, blank=True, on_delete=models.SET_NULL, related_name="calls")
 
     class Meta:
         ordering = ["-started_at"]
@@ -87,7 +95,7 @@ class Call(models.Model):
     def customer_name(self):
         return self.contact.name if self.contact_id else self.phone_number
 
-    def mark_ended(self, outcome=""):
+    def mark_ended(self, outcome="", hangup_cause="", disposition="", cause_code="", cause_text=""):
         self.state = self.State.ENDED
         if outcome:
             self.outcome = outcome
@@ -99,9 +107,16 @@ class Call(models.Model):
         if self.hold_started_at:
             self.hold_seconds += max(0, int((self.ended_at - self.hold_started_at).total_seconds()))
             self.hold_started_at = None
-        if not self.hangup_cause:
-            if self.answered_at or self.outcome == self.Outcome.CONNECTED:
+        if hangup_cause:
+            self.hangup_cause = hangup_cause
+        elif not self.hangup_cause:
+            if self.answered_at:
                 self.hangup_cause = "ANSWERED"
+            elif self.outcome == self.Outcome.CONNECTED:
+                self.hangup_cause = "UNKNOWN"
+                self.outcome = self.Outcome.UNKNOWN
+                if not self.disposition:
+                    self.disposition = "Unknown"
             elif self.outcome == self.Outcome.BUSY:
                 self.hangup_cause = "BUSY"
             elif self.outcome == self.Outcome.FAILED:
@@ -112,6 +127,12 @@ class Call(models.Model):
                 self.hangup_cause = "CANCELLED" if not self.ringing_at else "RINGING_NO_ANSWER"
                 if not self.outcome:
                     self.outcome = self.Outcome.NO_ANSWER if self.ringing_at else self.Outcome.CANCELLED
+        if disposition and not self.disposition:
+            self.disposition = disposition
+        if cause_code and not self.cause_code:
+            self.cause_code = str(cause_code)[:16]
+        if cause_text and not self.cause_text:
+            self.cause_text = str(cause_text)[:120]
         self.save()
 
 
@@ -138,3 +159,49 @@ class AgentModeSession(models.Model):
             models.Index(fields=["user", "ended_at"]),
             models.Index(fields=["mode", "ended_at"]),
         ]
+
+
+class GsmGateway(models.Model):
+    name = models.CharField(max_length=80)
+    host = models.CharField(max_length=80)
+    sip_endpoint = models.CharField(max_length=40, default="gsm222")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class PortGroup(models.Model):
+    gateway = models.ForeignKey(GsmGateway, on_delete=models.CASCADE, related_name="groups")
+    name = models.CharField(max_length=80)
+    agency = models.OneToOneField(
+        "accounts.Organization", null=True, blank=True, on_delete=models.SET_NULL, related_name="port_group"
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class GsmPort(models.Model):
+    group = models.ForeignKey(PortGroup, on_delete=models.CASCADE, related_name="ports")
+    name = models.CharField(max_length=80)
+    dial_prefix = models.CharField(max_length=32, blank=True, default="")
+    caller_id = models.CharField(max_length=32, blank=True, default="")
+    assigned_user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="gsm_port"
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name

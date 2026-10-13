@@ -66,6 +66,8 @@ class CallSerializer(serializers.ModelSerializer):
             "campaign_id",
             "media_mode",
             "hangup_cause",
+            "cause_code",
+            "cause_text",
             "hold_seconds",
             "dial_batch",
             "wrap_up_seconds",

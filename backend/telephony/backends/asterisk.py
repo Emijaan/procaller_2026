@@ -30,15 +30,21 @@ class AsteriskTelephony(TelephonyBackend):
             },
         }
 
-    def originate(self, call):
+    def _dial_number(self, call):
+        from telephony.channels import dial_prefix_for
+
         number = normalize_phone(call.phone_number)
         strip = settings.ASTERISK.get("STRIP_COUNTRY_CODE") or ""
         if strip and number.startswith(strip) and len(number) > len(strip) + 7:
             number = number[len(strip) :]
+        return number, dial_prefix_for(call)
+
+    def originate(self, call):
+        number, prefix = self._dial_number(call)
         conference = f"pc{call.session_id}" if call.session_id else f"pc{call.id}"
         try:
             payload = ari_client.originate_to_conference(
-                number=number,
+                number=f"{prefix}{number}",
                 conference=conference,
                 callerid_token=call.callerid_token,
             )
@@ -49,6 +55,7 @@ class AsteriskTelephony(TelephonyBackend):
                 conference=conference,
                 callerid_token=call.callerid_token,
                 call_id=call.id,
+                dial_prefix=prefix,
             )
         channel_id = ""
         if isinstance(payload, dict):
@@ -61,6 +68,21 @@ class AsteriskTelephony(TelephonyBackend):
         else:
             call.save(update_fields=["media_mode"])
         return payload
+
+    def originate_prompt(self, call):
+        number, prefix = self._dial_number(call)
+        audio = call.contact.tts_audio if call.contact_id else None
+        if not audio:
+            raise ValueError("Generate the Piper prompt before dialing")
+        call.media_mode = "asterisk"
+        call.save(update_fields=["media_mode"])
+        return ami.originate_playback(
+            number,
+            audio.path,
+            call.callerid_token,
+            call.id,
+            dial_prefix=prefix,
+        )
 
     def hangup(self, call):
         if call.asterisk_channel:

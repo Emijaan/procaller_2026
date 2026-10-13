@@ -6,8 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.access import agency_of, require_perm, scoped_campaigns, scoped_leads, scoped_users
-from accounts.models import User
+from accounts.access import agency_of, is_super_admin, require_perm, role_of, scoped_campaigns, scoped_leads, scoped_users
+from accounts.models import Organization, User
 from accounts.services import write_audit
 from crm.models import Contact, ImportJob
 from crm.serializers import ContactSerializer
@@ -18,6 +18,24 @@ from .serializers import CampaignSerializer
 
 def _scope(request):
     return scoped_campaigns(request.user, Campaign.objects.all())
+
+
+def _reject_ibr(user, agency):
+    if role_of(user) in {"user", "agent"}:
+        return Response({"detail": "Users cannot run IBR"}, status=403)
+    if not agency or not getattr(agency, "ibr_enabled", False):
+        return Response({"detail": "IBR is disabled for this agency"}, status=403)
+    return None
+
+
+def _same_agency_manager(user):
+    org = agency_of(user)
+    if user.normalized_role == User.Role.MANAGER:
+        return user
+    boss = user.reports_to
+    if boss and org and boss.organization_id == org.id and boss.normalized_role == User.Role.MANAGER:
+        return boss
+    return None
 
 
 class CampaignListCreateView(APIView):
@@ -32,20 +50,33 @@ class CampaignListCreateView(APIView):
         name = (request.data.get("name") or "").strip()
         if not name:
             return Response({"detail": "Campaign name is required"}, status=400)
+        kind = (request.data.get("campaign_type") or Campaign.CampaignType.LIVE).strip()
+        if kind not in {Campaign.CampaignType.LIVE, Campaign.CampaignType.IBR}:
+            return Response({"detail": "Unknown campaign type"}, status=400)
+        agency = agency_of(request.user)
+        if is_super_admin(request.user) and request.data.get("agency"):
+            agency = Organization.objects.filter(pk=request.data["agency"]).first()
+        if kind == Campaign.CampaignType.IBR:
+            denied = _reject_ibr(request.user, agency)
+            if denied:
+                return denied
         camp = Campaign.objects.create(
             name=name,
             description=request.data.get("description") or "",
             status=request.data.get("status") or Campaign.Status.DRAFT,
+            campaign_type=kind,
+            tts_prompt=request.data.get("tts_prompt") or "",
+            tts_voice=request.data.get("tts_voice") or "",
             dial_method=request.data.get("dial_method") or Campaign.DialMethod.MANUAL,
             caller_id=request.data.get("caller_id") or "",
             caller_id_name=request.data.get("caller_id_name") or "ProCaller",
             code=request.data.get("code") or "",
             wrap_up_seconds=int(request.data.get("wrap_up_seconds") or 30),
             dial_ratio=max(1, min(32, int(request.data.get("dial_ratio") or 1))),
-            agency=agency_of(request.user),
+            agency=agency,
             created_by=request.user,
             admin=request.user if request.user.normalized_role == User.Role.ADMIN else None,
-            manager=request.user if request.user.normalized_role == User.Role.MANAGER else request.user.reports_to,
+            manager=_same_agency_manager(request.user),
             active=True,
         )
         write_audit(request.user, "campaign_create", "campaign", camp.id, request)
@@ -68,19 +99,46 @@ class CampaignDetailView(APIView):
         camp = _scope(request).filter(pk=pk).first()
         if not camp:
             return Response({"detail": "Not found"}, status=404)
-        for field in ("name", "description", "status", "dial_method", "caller_id", "caller_id_name", "active", "code", "wrap_up_seconds", "dial_ratio"):
+        next_kind = request.data.get("campaign_type", camp.campaign_type)
+        if next_kind == Campaign.CampaignType.IBR or camp.campaign_type == Campaign.CampaignType.IBR:
+            denied = _reject_ibr(request.user, camp.agency)
+            if denied:
+                return denied
+        for field in (
+            "name",
+            "description",
+            "status",
+            "dial_method",
+            "caller_id",
+            "caller_id_name",
+            "active",
+            "code",
+            "wrap_up_seconds",
+            "dial_ratio",
+            "auto_running",
+            "campaign_type",
+            "tts_prompt",
+            "tts_voice",
+        ):
             if field in request.data:
                 value = request.data[field]
                 if field == "wrap_up_seconds":
                     value = max(0, int(value or 30))
                 if field == "dial_ratio":
                     value = max(1, min(32, int(value or 1)))
+                if field == "auto_running":
+                    value = value.lower() in {"1", "true", "yes"} if isinstance(value, str) else bool(value)
                 setattr(camp, field, value)
         if "status" in request.data:
             camp.active = request.data["status"] in (Campaign.Status.ACTIVE, Campaign.Status.RUNNING)
         camp.save()
         if "assigned_users" in request.data:
-            ids = request.data.get("assigned_users") or []
+            ids = []
+            for raw in request.data.get("assigned_users") or []:
+                try:
+                    ids.append(int(raw))
+                except (TypeError, ValueError):
+                    continue
             camp.assigned_users.set(scoped_users(request.user).filter(pk__in=ids))
         write_audit(request.user, "campaign_update", "campaign", camp.id, request)
         return Response(CampaignSerializer(camp).data)
@@ -228,7 +286,7 @@ class CampaignImportPreviewView(APIView):
             created_by=request.user,
             file_name=upload.name,
             status=ImportJob.Status.PREVIEW,
-            mapping={"mobile": mobile_key},
+            mapping={"mobile": mobile_key, "columns": headers},
             total_rows=len(records),
             valid_rows=len(valid),
             invalid_rows=len(invalid),
@@ -267,6 +325,10 @@ class CampaignImportConfirmView(APIView):
             return Response({"detail": "Upload the same Excel file to confirm import"}, status=400)
         headers, records = _read_excel(upload)
         mobile_key = job.mapping.get("mobile") or _find_mobile_key(headers)
+        try:
+            threads = max(1, min(32, int(request.data.get("dial_threads") or job.dial_threads or camp.dial_ratio or 1)))
+        except (TypeError, ValueError):
+            threads = max(1, min(32, int(camp.dial_ratio or 1)))
         skip_duplicates = request.data.get("skip_duplicates", True)
         existing = set(
             _normalize_mobile(p)
@@ -288,12 +350,18 @@ class CampaignImportConfirmView(APIView):
                         continue
                     errors.append({"row": rec.get("_row"), "error": "Duplicate mobile", "mobile": mobile})
                     continue
-                extra = {k: v for k, v in rec.items() if k not in {mobile_key, "_row", "_mobile"} and v}
+                extra = {k: v for k, v in rec.items() if k not in {mobile_key, "_row", "_mobile"}}
                 name = extra.get("Name") or extra.get("name") or extra.get("Customer") or mobile
                 company = extra.get("Company") or extra.get("company") or extra.get("Product") or ""
+                email = ""
+                for key, value in extra.items():
+                    if key.lower().replace(" ", "") in {"email", "emailid", "mail"} and "@" in str(value):
+                        email = str(value)[:254]
+                        break
                 contact = Contact(
                     name=str(name)[:160],
                     phone=mobile,
+                    email=email,
                     company=str(company)[:160],
                     extra_data=extra,
                     campaign=camp,
@@ -308,9 +376,12 @@ class CampaignImportConfirmView(APIView):
             Contact.objects.bulk_create(created, batch_size=500)
         job.status = ImportJob.Status.DONE
         job.imported_rows = len(created)
+        job.dial_threads = threads
         job.errors = errors[:200]
         job.invalid_rows = len(errors)
         job.save()
+        camp.dial_ratio = threads
+        camp.save(update_fields=["dial_ratio", "updated_at"])
         write_audit(request.user, "excel_import", "campaign", camp.id, request, {"imported": len(created)})
         return Response(
             {
@@ -322,6 +393,81 @@ class CampaignImportConfirmView(APIView):
         )
 
 
+def _lead_board(camp, contacts):
+    from telephony.models import Call
+    from telephony.utils import format_duration
+
+    from django.db.models import Count
+
+    ids = [row.id for row in contacts]
+    grouped = {pk: [] for pk in ids}
+    totals = {}
+    if ids:
+        totals = {
+            item["contact_id"]: item["c"]
+            for item in Call.objects.filter(contact_id__in=ids).values("contact_id").annotate(c=Count("id"))
+        }
+        calls = (
+            Call.objects.filter(contact_id__in=ids)
+            .select_related("agent")
+            .order_by("-id")
+        )
+        for call in calls:
+            bucket = grouped.get(call.contact_id)
+            if bucket is None or len(bucket) >= 8:
+                continue
+            bucket.append(
+                {
+                    "id": call.id,
+                    "agent": call.agent.display_name if call.agent_id else "",
+                    "state": call.state,
+                    "outcome": call.outcome,
+                    "disposition": call.disposition,
+                    "duration": format_duration(call.duration_seconds),
+                    "duration_seconds": call.duration_seconds,
+                    "started_at": call.started_at,
+                }
+            )
+    columns = []
+    seen_cols = set()
+    mobile_column = "Mobile"
+    for job in camp.import_jobs.order_by("id"):
+        mapping = job.mapping or {}
+        if mapping.get("mobile"):
+            mobile_column = mapping["mobile"]
+            seen_cols.add(mapping["mobile"])
+        for col in mapping.get("columns") or []:
+            if col and col not in seen_cols:
+                seen_cols.add(col)
+                columns.append(col)
+    for row in contacts:
+        for key in row.extra_data or {}:
+            if key and key not in seen_cols:
+                seen_cols.add(key)
+                columns.append(key)
+    leads = []
+    for row in contacts:
+        history = grouped.get(row.id) or []
+        latest = history[0] if history else None
+        payload = ContactSerializer(row).data
+        payload.update(
+            {
+                "attempt_count": totals.get(row.id, 0),
+                "last_agent": (latest or {}).get("agent") or (row.owner.display_name if row.owner_id else ""),
+                "last_outcome": (latest or {}).get("outcome") or "",
+                "last_duration": (latest or {}).get("duration") or "00:00",
+                "last_duration_seconds": (latest or {}).get("duration_seconds") or 0,
+                "calls": history,
+            }
+        )
+        leads.append(payload)
+    return {
+        "columns": columns,
+        "mobile_column": mobile_column,
+        "leads": leads,
+    }
+
+
 class CampaignLeadListView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -329,8 +475,9 @@ class CampaignLeadListView(APIView):
         camp = _scope(request).filter(pk=pk).first()
         if not camp:
             return Response({"detail": "Not found"}, status=404)
-        qs = scoped_leads(request.user, Contact.objects.filter(campaign=camp))
-        return Response(ContactSerializer(qs[:500], many=True).data)
+        qs = scoped_leads(request.user, Contact.objects.filter(campaign=camp)).select_related("owner", "campaign")
+        contacts = list(qs.order_by("id")[:500])
+        return Response(_lead_board(camp, contacts))
 
     def post(self, request, pk):
         require_perm(request.user, "assign_leads")
@@ -346,3 +493,28 @@ class CampaignLeadListView(APIView):
         updated = qs.update(owner=assignee, lead_status=Contact.LeadStatus.ASSIGNED)
         write_audit(request.user, "lead_assignment", "campaign", camp.id, request, {"count": updated})
         return Response({"assigned": updated})
+
+
+class CampaignTtsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        require_perm(request.user, "edit_campaign")
+        camp = _scope(request).select_related("agency").filter(pk=pk).first()
+        if not camp:
+            return Response({"detail": "Not found"}, status=404)
+        if camp.campaign_type != Campaign.CampaignType.IBR:
+            return Response({"detail": "This campaign is not an IBR broadcast"}, status=400)
+        denied = _reject_ibr(request.user, camp.agency)
+        if denied:
+            return denied
+        if not (camp.tts_prompt or "").strip():
+            return Response({"detail": "Write a speech prompt first"}, status=400)
+        from telephony.tts import generate_campaign_audio
+
+        try:
+            result = generate_campaign_audio(camp)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        write_audit(request.user, "campaign_tts", "campaign", camp.id, request, result)
+        return Response(result)

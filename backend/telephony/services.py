@@ -16,8 +16,12 @@ from .utils import make_callerid_token, normalize_phone
 
 
 def start_session(user, campaign=None):
+    from accounts.access import scoped_campaigns
+    from campaigns.models import Campaign
     from telephony.sip_provision import ensure_sip_identity
 
+    if campaign and not scoped_campaigns(user, Campaign.objects.filter(pk=campaign.pk)).exists():
+        raise ValueError("You cannot use this campaign")
     ensure_sip_identity(user)
     session = AgentSession.objects.filter(user=user, ended_at__isnull=True).order_by("-id").first()
     if not session:
@@ -70,6 +74,10 @@ def release_live_calls(user):
 
 
 def originate_manual(user, phone_number, contact=None, campaign=None, session=None, client_dial=False, preview=False, skip_release=False, dial_batch=""):
+    from accounts.access import assert_can_use_campaign
+
+    campaign = campaign or (session.campaign if session else None)
+    assert_can_use_campaign(user, campaign)
     if preview:
         from telephony.models import AgentModeSession
 
@@ -96,11 +104,19 @@ def _originate_manual(user, phone_number, contact=None, campaign=None, session=N
     if not number or len(number) < 3:
         raise ValueError("Enter a valid phone number")
 
-    if contact is None:
+    if contact is not None:
+        from accounts.access import scoped_leads
+
+        if not scoped_leads(user, Contact.objects.filter(pk=contact.pk)).exists():
+            raise ValueError("You cannot use this lead")
+    elif contact is None:
         from crm.queue import lookup_lead_by_phone
 
         contact = lookup_lead_by_phone(user, number, campaign_id=getattr(campaign, "id", None))
 
+    from telephony.channels import port_for_user
+
+    port = port_for_user(user)
     session = session or AgentSession.objects.filter(user=user, ended_at__isnull=True).order_by("-id").first()
     call = Call.objects.create(
         agent=user,
@@ -111,6 +127,7 @@ def _originate_manual(user, phone_number, contact=None, campaign=None, session=N
         callerid_token=make_callerid_token(user.id),
         media_mode=get_telephony().name,
         recording=True,
+        gsm_port=port,
     )
     # token uniqueness uses call id after save
     call.callerid_token = make_callerid_token(call.id)
@@ -133,6 +150,34 @@ def _originate_manual(user, phone_number, contact=None, campaign=None, session=N
         from telephony.ari_client import watch_gateway
 
         watch_gateway(call.id, number)
+    broadcast_call(call, "call.started")
+    return call
+
+
+def originate_broadcast(campaign, contact, port=None):
+    """Place one IBR attempt. The prompt plays only after the customer answers."""
+    if campaign.campaign_type != "ibr":
+        raise ValueError("This campaign is not an IBR broadcast")
+    if not contact or not contact.tts_audio or contact.tts_status != "ready":
+        raise ValueError("Generate the Piper prompt before dialing")
+    user = port.assigned_user if port and port.assigned_user_id else campaign.created_by
+    if not user:
+        raise ValueError("IBR needs a user on the GSM channel")
+    call = Call.objects.create(
+        agent=user,
+        contact=contact,
+        campaign=campaign,
+        phone_number=contact.phone,
+        callerid_token=make_callerid_token(contact.id),
+        media_mode=get_telephony().name,
+        recording=False,
+        gsm_port=port,
+    )
+    call.callerid_token = make_callerid_token(call.id)
+    call.save(update_fields=["callerid_token"])
+    contact.lead_status = Contact.LeadStatus.CALLING
+    contact.save(update_fields=["lead_status", "updated_at"])
+    get_telephony().originate_prompt(call)
     broadcast_call(call, "call.started")
     return call
 
@@ -185,25 +230,128 @@ def drop_parallel_legs(winner):
         hangup_call(sibling, outcome=Call.Outcome.CANCELLED)
 
 
-def hangup_call(call, outcome=""):
+def _remember_network(call, cause_code="", cause_text=""):
+    fields = []
+    if cause_code and not call.cause_code:
+        call.cause_code = str(cause_code)[:16]
+        fields.append("cause_code")
+    if cause_text and not call.cause_text:
+        call.cause_text = str(cause_text)[:120]
+        fields.append("cause_text")
+    if fields:
+        call.save(update_fields=fields)
+
+
+def _apply_detected_disposition(call):
+    if not call.contact_id or not call.disposition:
+        return
+    contact = call.contact
+    fields = []
+    auto = {
+        "Connected",
+        "Busy",
+        "No Answer",
+        "Failed",
+        "Cancelled",
+        "Unknown",
+        "Switch Off",
+        "Not Reachable",
+        "Out of Service Area",
+        "Incoming Calls Not Allowed",
+    }
+    if not contact.last_disposition or contact.last_disposition in auto:
+        contact.last_disposition = call.disposition
+        fields.append("last_disposition")
+    if not call.answered_at and contact.lead_status == Contact.LeadStatus.CALLING:
+        contact.lead_status = {
+            "Busy": Contact.LeadStatus.BUSY,
+            "No Answer": Contact.LeadStatus.NO_ANSWER,
+        }.get(call.disposition, Contact.LeadStatus.NOT_CONNECTED)
+        contact.reserved_by = None
+        contact.reserved_until = None
+        fields.extend(["lead_status", "reserved_by", "reserved_until"])
+    if fields:
+        fields.append("updated_at")
+        contact.save(update_fields=fields)
+
+
+def _refine_ended_call(call, outcome, hangup_cause, disposition, cause_code="", cause_text=""):
+    from telephony.causes import NETWORK_DISPOSITIONS, UNREACHED_DISPOSITIONS
+
+    if call.disposition and call.disposition not in NETWORK_DISPOSITIONS:
+        _remember_network(call, cause_code, cause_text)
+        return call
+    if disposition == "Unknown" and call.disposition:
+        _remember_network(call, cause_code, cause_text)
+        return call
+    replace = call.disposition in {"", "Unknown", "Cancelled"} or (
+        disposition in UNREACHED_DISPOSITIONS and call.disposition == "Connected"
+    )
+    if not replace and call.disposition == disposition:
+        _remember_network(call, cause_code, cause_text)
+        return call
+    if not replace:
+        _remember_network(call, cause_code, cause_text)
+        return call
+    call.outcome = outcome
+    call.hangup_cause = hangup_cause
+    call.disposition = disposition
+    if cause_code:
+        call.cause_code = str(cause_code)[:16]
+    if cause_text:
+        call.cause_text = str(cause_text)[:120]
+    if disposition in UNREACHED_DISPOSITIONS:
+        call.answered_at = None
+    call.save()
+    _apply_detected_disposition(call)
+    return call
+
+
+def hangup_call(call, outcome="", cause_code="", cause_text="", dial_status="", originate_reason=""):
+    from telephony.causes import classify_hangup
+
+    detected = classify_hangup(
+        answered=bool(call.answered_at),
+        ringing=bool(call.ringing_at),
+        outcome=outcome,
+        cause_code=cause_code,
+        cause_text=cause_text,
+        dial_status=dial_status,
+        originate_reason=originate_reason,
+    )
+    detected_outcome, detected_cause, detected_disposition = detected
+    from telephony.causes import UNREACHED_DISPOSITIONS
+
+    if detected_disposition in UNREACHED_DISPOSITIONS:
+        call.answered_at = None
+    elif detected_disposition == "Connected" and not call.answered_at:
+        call.answered_at = timezone.now()
+    from_network = bool(cause_code or cause_text or dial_status or originate_reason)
     wrap = not _agent_has_other_live(call)
+    if call.state == Call.State.ENDED:
+        if from_network:
+            _refine_ended_call(
+                call,
+                detected_outcome,
+                detected_cause,
+                detected_disposition,
+                cause_code=cause_code,
+                cause_text=cause_text,
+            )
+        return call
     if call.state != Call.State.ENDED:
         try:
             get_telephony().hangup(call)
         except Exception:
             pass
-        call.mark_ended(outcome=outcome)
-        if call.contact_id and not call.answered_at and call.contact.lead_status == Contact.LeadStatus.CALLING:
-            mapped = {
-                Call.Outcome.BUSY: Contact.LeadStatus.BUSY,
-                Call.Outcome.NO_ANSWER: Contact.LeadStatus.NO_ANSWER,
-                Call.Outcome.FAILED: Contact.LeadStatus.NOT_CONNECTED,
-                Call.Outcome.CANCELLED: Contact.LeadStatus.NOT_CONNECTED,
-            }.get(call.outcome, Contact.LeadStatus.NO_ANSWER)
-            call.contact.lead_status = mapped
-            call.contact.reserved_by = None
-            call.contact.reserved_until = None
-            call.contact.save(update_fields=["lead_status", "reserved_by", "reserved_until", "updated_at"])
+        call.mark_ended(
+            outcome=detected_outcome,
+            hangup_cause=detected_cause,
+            disposition=detected_disposition,
+            cause_code=cause_code,
+            cause_text=cause_text,
+        )
+        _apply_detected_disposition(call)
     if wrap:
         call.agent.presence = User.Presence.WRAP_UP
         call.agent.save(update_fields=["presence"])
@@ -225,6 +373,9 @@ def originate_preview_batch(user, campaign=None, ratio=None, session=None):
         raise ValueError("Switch to Preview Auto before auto-dialing")
     live = ModeRow.objects.filter(user=user, ended_at__isnull=True).order_by("-id").first()
     campaign = campaign or (live.campaign if live else None)
+    from accounts.access import assert_can_use_campaign
+
+    assert_can_use_campaign(user, campaign)
     ratio = clamp_ratio(ratio, (live.dial_ratio if live else None) or getattr(campaign, "dial_ratio", 1) or 1)
     if live and live.dial_ratio != ratio:
         live.dial_ratio = ratio

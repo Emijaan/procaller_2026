@@ -7,6 +7,7 @@ from .views import (
     CampaignImportPreviewView,
     CampaignLeadListView,
     CampaignListCreateView,
+    CampaignTtsView,
 )
 
 urlpatterns = [
@@ -16,4 +17,5 @@ urlpatterns = [
     path("campaigns/<int:pk>/import/preview/", CampaignImportPreviewView.as_view(), name="campaign-import-preview"),
     path("campaigns/<int:pk>/import/", CampaignImportConfirmView.as_view(), name="campaign-import"),
     path("campaigns/<int:pk>/leads/", CampaignLeadListView.as_view(), name="campaign-leads"),
+    path("campaigns/<int:pk>/tts/", CampaignTtsView.as_view(), name="campaign-tts"),
 ]

@@ -11,6 +11,7 @@ export interface Organization {
   max_managers?: number;
   max_admins?: number;
   max_users?: number;
+  ibr_enabled?: boolean;
   managers?: number;
   admins?: number;
   users?: number;
@@ -39,6 +40,9 @@ export interface User {
   max_users?: number;
   is_active?: boolean;
   is_superuser?: boolean;
+  campaign_ids?: number[];
+  campaign_names?: string[];
+  gsm_port?: number | null;
 }
 
 export interface Campaign {
@@ -50,6 +54,7 @@ export interface Campaign {
   caller_id: string;
   caller_id_name: string;
   active: boolean;
+  agency?: number | null;
   agency_name?: string;
   manager_name?: string;
   admin_name?: string;
@@ -60,7 +65,11 @@ export interface Campaign {
   hold_audio_name?: string;
   wrap_up_seconds?: number;
   dial_ratio?: number;
+  auto_running?: boolean;
   code?: string;
+  campaign_type?: string;
+  tts_prompt?: string;
+  tts_voice?: string;
 }
 
 export interface Contact {
@@ -81,6 +90,8 @@ export interface Contact {
   last_contact_at: string | null;
   lead_status?: string;
   extra_data?: Record<string, string>;
+  tts_status?: string;
+  tts_error?: string;
   next_callback_at?: string | null;
   call_count?: number;
 }

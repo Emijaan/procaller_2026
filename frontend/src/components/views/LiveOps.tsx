@@ -1,6 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Card, Avatar, AgentStatusBadge, Button, StatCard, Modal } from '../ui/index';
 import { api } from '../../api/client';
+import type { TelephonySession } from '../../api/types';
+import { useAuth } from '../../context/AuthContext';
+import { useWebPhone } from '../../hooks/useWebPhone';
 
 type LiveAgent = {
   id: number;
@@ -20,8 +23,12 @@ type LiveAgent = {
 };
 
 export default function LiveOps({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+  const { user } = useAuth();
+  const phone = useWebPhone();
+  const sipRef = useRef<TelephonySession | null>(null);
   const [agents, setAgents] = useState<LiveAgent[]>([]);
   const [monitorAgent, setMonitorAgent] = useState<LiveAgent | null>(null);
+  const [spyLabel, setSpyLabel] = useState('');
 
   const load = () => api<{ agents: LiveAgent[] }>('/api/live/agents/').then((data) => setAgents(data.agents || [])).catch(() => undefined);
   useEffect(() => {
@@ -30,12 +37,36 @@ export default function LiveOps({ showToast }: { showToast: (msg: string, type?:
     return () => window.clearInterval(tick);
   }, []);
 
+  const ensurePhone = async () => {
+    if (sipRef.current?.sip) return sipRef.current;
+    const session = await api<TelephonySession>('/api/telephony/session/', { method: 'POST', body: '{}' });
+    sipRef.current = session;
+    if (session.sip) await phone.connectSip(session.sip);
+    return session;
+  };
+
   const act = async (action: string, agent: LiveAgent) => {
     try {
-      const res = await api<{ detail?: string }>(`/api/live/actions/`, {
+      const res = await api<{ detail?: string; supported?: boolean; dial?: string }>(`/api/live/actions/`, {
         method: 'POST',
         body: JSON.stringify({ action, agent_id: agent.id }),
       });
+      if (action === 'logout') {
+        showToast(res.detail || `${agent.name} logged out`, 'success');
+        load();
+        return;
+      }
+      if (res.supported && res.dial) {
+        const session = await ensurePhone();
+        if (!session.sip) throw new Error('Your phone is not registered');
+        setMonitorAgent(agent);
+        setSpyLabel(action);
+        await phone.placeCall(session.sip, res.dial, {
+          onHangup: () => setSpyLabel(''),
+        });
+        showToast(res.detail || `${action} on ${agent.name}`, 'success');
+        return;
+      }
       showToast(res.detail || `${action} logged for ${agent.name}`, 'info');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Action failed', 'error');
@@ -131,13 +162,18 @@ export default function LiveOps({ showToast }: { showToast: (msg: string, type?:
                     <p className="text-[10px] text-slate-400">Campaign</p>
                   </div>
                 </div>
-                {!!agent.call_state && (
-                  <div className="flex gap-1.5">
-                    <button onClick={() => { setMonitorAgent(agent); act('listen', agent); }} className="flex-1 text-xs py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium">Listen</button>
-                    <button onClick={() => act('whisper', agent)} className="flex-1 text-xs py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium">Whisper</button>
-                    <button onClick={() => act('barge', agent)} className="flex-1 text-xs py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 font-medium">Barge</button>
-                  </div>
-                )}
+                <div className="flex gap-1.5">
+                  {!!agent.call_state && (
+                    <>
+                      <button onClick={() => act('listen', agent)} className="flex-1 text-xs py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium">Listen</button>
+                      <button onClick={() => act('whisper', agent)} className="flex-1 text-xs py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium">Whisper</button>
+                      <button onClick={() => act('barge', agent)} className="flex-1 text-xs py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 font-medium">Interrupt</button>
+                    </>
+                  )}
+                  {agent.id !== user?.id && (
+                    <button onClick={() => act('logout', agent)} className="flex-1 text-xs py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-medium">Logout</button>
+                  )}
+                </div>
               </Card>
             ))}
             {!agents.length && <p className="text-sm text-slate-400 col-span-full">No agents in your scope yet.</p>}
@@ -154,7 +190,10 @@ export default function LiveOps({ showToast }: { showToast: (msg: string, type?:
               <p className="text-xs text-slate-500">{monitorAgent.campaign}</p>
               <p className="font-mono text-2xl font-bold text-indigo-600 mt-2">{monitorAgent.duration || '—'}</p>
             </div>
-            <p className="text-xs text-slate-500">Live audio join is not available on the 1:1 GSM path. The action is logged for audit.</p>
+            <p className="text-xs text-slate-500">{spyLabel ? `${spyLabel} in progress. Stop to leave the call.` : 'Listen is silent. Whisper is heard only by the user. Interrupt is heard by both sides.'}</p>
+            {spyLabel && (
+              <Button variant="secondary" size="sm" className="w-full" onClick={() => { phone.hangupCall(); setSpyLabel(''); }}>Stop</Button>
+            )}
           </div>
         )}
       </Modal>

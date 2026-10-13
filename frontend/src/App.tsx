@@ -18,6 +18,7 @@ import Reports from './components/views/Reports';
 import { CallQueue, IVR, Integrations } from './components/views/OtherViews';
 import { ToastContainer, useToast } from './components/ui/index';
 import { useAuth } from './context/AuthContext';
+import { useAgentSocket } from './hooks/useAgentSocket';
 
 // ─── Command Palette ─────────────────────────────────────────────────────────
 const commands = [
@@ -101,6 +102,14 @@ function CommandPalette({ onNavigate, onClose }: { onNavigate: (v: string) => vo
   );
 }
 
+function SessionWatch() {
+  const { user, logout } = useAuth();
+  useAgentSocket((payload) => {
+    if (payload?.type === 'force_logout') logout();
+  }, !!user);
+  return null;
+}
+
 // ─── App ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const { user, loading } = useAuth();
@@ -182,6 +191,7 @@ export default function App() {
 
   return (
     <div className={`h-screen flex overflow-hidden ${isDark ? 'dark' : ''}`} style={{ background: 'var(--background)' }}>
+      <SessionWatch />
       {/* Sidebar */}
       <Sidebar
         active={view}
