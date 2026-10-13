@@ -1,6 +1,7 @@
 import os
 import re
 import tempfile
+import threading
 import wave
 from functools import lru_cache
 from pathlib import Path
@@ -119,3 +120,54 @@ def generate_campaign_audio(campaign):
             if len(errors) < 20:
                 errors.append({"lead_id": lead.id, "phone": lead.phone, "detail": str(exc)})
     return {"ready": ready, "failed": failed, "errors": errors, "voice": voice}
+
+
+def generate_leads(campaign, contact_ids):
+    """Build one Piper file per approved row. A missing column fails only that row."""
+    from crm.models import Contact
+
+    ids = list(contact_ids)
+    leads = Contact.objects.filter(pk__in=ids, campaign=campaign).order_by("id")
+    voice = (campaign.tts_voice or settings.PIPER_DEFAULT_VOICE).strip()
+    prompt = campaign.tts_prompt or ""
+    try:
+        voice_path(voice)
+    except Exception as exc:
+        leads.update(tts_status="failed", tts_error=str(exc)[:240])
+        return {"ready": 0, "failed": leads.count(), "voice": voice}
+    ready = failed = 0
+    for lead in leads:
+        try:
+            generate_lead_audio(lead, prompt, voice)
+            ready += 1
+        except Exception as exc:
+            failed += 1
+            lead.tts_status = "failed"
+            lead.tts_error = str(exc)[:240]
+            lead.save(update_fields=["tts_status", "tts_error", "updated_at"])
+    return {"ready": ready, "failed": failed, "voice": voice}
+
+
+def queue_ibr_speech(campaign_id, contact_ids):
+    ids = [int(pk) for pk in contact_ids if pk]
+
+    def run():
+        from django.db import close_old_connections
+
+        from campaigns.models import Campaign
+
+        inline = getattr(settings, "IBR_APPROVE_INLINE", False)
+        if not inline:
+            close_old_connections()
+        try:
+            campaign = Campaign.objects.filter(pk=campaign_id).first()
+            if campaign and ids:
+                generate_leads(campaign, ids)
+        finally:
+            if not inline:
+                close_old_connections()
+
+    if getattr(settings, "IBR_APPROVE_INLINE", False):
+        run()
+        return
+    threading.Thread(target=run, daemon=True).start()

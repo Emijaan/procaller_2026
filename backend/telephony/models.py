@@ -193,6 +193,8 @@ class PortGroup(models.Model):
 class GsmPort(models.Model):
     group = models.ForeignKey(PortGroup, on_delete=models.CASCADE, related_name="ports")
     name = models.CharField(max_length=80)
+    synway_port = models.PositiveSmallIntegerField(null=True, blank=True)
+    sip_account = models.CharField(max_length=32, blank=True, default="")
     dial_prefix = models.CharField(max_length=32, blank=True, default="")
     caller_id = models.CharField(max_length=32, blank=True, default="")
     assigned_user = models.OneToOneField(

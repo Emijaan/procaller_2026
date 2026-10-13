@@ -344,6 +344,72 @@ class CampaignReportView(APIView):
         return Response({"from": start, "to": end, "campaigns": rows})
 
 
+def ibr_report_rows(user, campaign_id):
+    """One row per IBR attempt, with the uploaded columns repeated on every attempt."""
+    camps = scoped_campaigns(user, Campaign.objects.filter(campaign_type=Campaign.CampaignType.IBR))
+    requested = campaign_id not in (None, "")
+    if requested:
+        parsed = _param_id({"campaign": campaign_id}, "campaign")
+        camps = camps.filter(pk=parsed) if isinstance(parsed, int) else camps.none()
+    camp_ids = list(camps.values_list("id", flat=True))
+    fixed = [
+        "campaign", "lead_id", "phone", "name", "audio_status", "audio_error", "attempt",
+        "started_at", "duration_seconds", "state", "outcome", "disposition", "hangup_cause",
+        "cause_code", "cause_text",
+    ]
+    if not camp_ids:
+        return fixed, [], False
+    leads = list(Contact.objects.filter(campaign_id__in=camp_ids).select_related("campaign").order_by("campaign_id", "id"))
+    history = {}
+    for call in Call.objects.filter(campaign_id__in=camp_ids).order_by("contact_id", "id"):
+        history.setdefault(call.contact_id, []).append(call)
+    extra_keys = []
+    used_sources = set()
+    for lead in leads:
+        for key in lead.extra_data or {}:
+            source = str(key)
+            if source in used_sources:
+                continue
+            used_sources.add(source)
+            label = source if source not in fixed else f"column_{source}"
+            extra_keys.append((source, label))
+    headers = fixed + [label for _key, label in extra_keys]
+    rows = []
+    for lead in leads:
+        attempts = history.get(lead.id) or [None]
+        for index, call in enumerate(attempts, start=1):
+            disposition = ""
+            outcome = ""
+            if call:
+                disposition = call.disposition or ""
+                outcome = call.outcome or ""
+                if (disposition == "Connected" or outcome == "Connected") and not call.answered_at:
+                    disposition = "Unknown"
+                    outcome = "Unknown"
+            row = {
+                "campaign": lead.campaign.name if lead.campaign_id else "",
+                "lead_id": lead.id,
+                "phone": lead.phone,
+                "name": lead.name,
+                "audio_status": lead.tts_status,
+                "audio_error": lead.tts_error,
+                "attempt": index if call else 0,
+                "started_at": timezone.localtime(call.started_at).strftime("%Y-%m-%d %H:%M:%S") if call and call.started_at else "",
+                "duration_seconds": call.duration_seconds if call else "",
+                "state": call.state if call else "",
+                "outcome": outcome,
+                "disposition": disposition,
+                "hangup_cause": call.hangup_cause if call else "",
+                "cause_code": call.cause_code if call else "",
+                "cause_text": call.cause_text if call else "",
+            }
+            for key, label in extra_keys:
+                value = (lead.extra_data or {}).get(key, "")
+                row[label] = "" if value is None else value
+            rows.append(row)
+    return headers, rows, True
+
+
 class ReportExportView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -362,11 +428,18 @@ class ReportExportView(APIView):
             ]
             records = data["campaigns"]
             filename = "campaign-report"
+        elif kind == "ibr":
+            if role_of(request.user) in {"user", "agent"}:
+                return Response({"detail": "Users cannot run IBR"}, status=403)
+            headers, records, found = ibr_report_rows(request.user, request.query_params.get("campaign"))
+            if request.query_params.get("campaign") and not found:
+                return Response({"detail": "Not found"}, status=404)
+            filename = "ibr-report"
         elif kind == "calls":
             headers = [
                 "id", "lead_id", "phone", "campaign", "agency", "agent", "agent_role", "manager",
                 "started_at", "duration_seconds", "state", "outcome", "disposition", "hangup_cause",
-                "cause_code", "cause_text", "attempt",
+                "cause_code", "cause_text", "attempt", "audio_status",
             ]
             records = list(_call_export_rows(request.user, request.query_params))
             filename = "call-report"
@@ -443,6 +516,7 @@ def _call_dict(call):
         "cause_code": call.cause_code,
         "cause_text": call.cause_text,
         "attempt": getattr(call, "attempt", 1) or 1,
+        "audio_status": call.contact.tts_status if call.contact_id else "",
     }
 
 

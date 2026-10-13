@@ -140,7 +140,7 @@ def cli_output(command, timeout=8):
 
 
 def originate_playback(number, wav_path, callerid_token, call_id, dial_prefix="", timeout=60):
-    """Dial the customer and, only after answer, play the Piper WAV."""
+    """Dial the customer. Playback runs only after answer, then Asterisk hangs the call up."""
     stem = str(wav_path)
     if stem.lower().endswith(".wav"):
         stem = stem[:-4]
@@ -154,6 +154,7 @@ def originate_playback(number, wav_path, callerid_token, call_id, dial_prefix=""
             "CallerID": f'"{callerid_token}" <{number}>',
             "Timeout": str(int(timeout) * 1000),
             "Async": "true",
+            "ActionID": f"ibr-{call_id}",
             "Variable": f"PROCALLER_ID={call_id}",
         }
     )
@@ -220,6 +221,14 @@ def _customer_channel(call, channel):
 def _find_call(msg):
     from telephony.models import Call
 
+    action = str(msg.get("ActionID") or "")
+    if action.startswith("ibr-"):
+        try:
+            call = Call.objects.filter(pk=int(action[4:])).order_by("-id").first()
+        except ValueError:
+            call = None
+        if call:
+            return call
     token = _event_token(msg)
     if token:
         call = Call.objects.filter(callerid_token=token).order_by("-id").first()
@@ -237,6 +246,18 @@ def _find_call(msg):
 def _handle_event(msg):
     event = msg.get("Event")
     if event == "UserEvent" and msg.get("UserEvent") != "ProCallerDial":
+        return
+    if event == "VarSet" and str(msg.get("Variable") or "") == "PROCALLER_ID":
+        from telephony.models import Call
+
+        try:
+            call = Call.objects.filter(pk=int(msg.get("Value") or 0)).first()
+        except ValueError:
+            return
+        channel = msg.get("Channel") or ""
+        if call and channel and not call.asterisk_channel:
+            call.asterisk_channel = channel
+            call.save(update_fields=["asterisk_channel"])
         return
     if event not in {"Newstate", "Hangup", "OriginateResponse", "DialEnd", "UserEvent"}:
         return

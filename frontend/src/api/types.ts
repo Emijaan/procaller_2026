@@ -29,6 +29,7 @@ export interface User {
   role: 'super_admin' | 'agency' | 'manager' | 'admin' | 'user' | 'supervisor' | 'agent' | string;
   role_normalized?: string;
   team: string;
+  pc_number?: number | null;
   extension: string;
   presence: Presence;
   avatar_initials: string;

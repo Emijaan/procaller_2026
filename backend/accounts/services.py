@@ -136,6 +136,10 @@ def create_account(actor, *, email, password, role, organization=None, reports_t
             manager = reports_to.reports_to if reports_to.reports_to and role_of(reports_to.reports_to) == User.Role.MANAGER else None
         if manager:
             assert_manager_limits(manager, role)
+    extra.pop("extension", None)
+    extra.pop("sip_username", None)
+    extra.pop("sip_password", None)
+    extra.pop("pc_number", None)
     user = User(
         email=email,
         username=email,

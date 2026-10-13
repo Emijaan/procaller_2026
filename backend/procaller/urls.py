@@ -6,6 +6,8 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path, re_path
 
+from telephony.gateway_views import TtsAudioView
+
 from .spa import spa
 
 admin.site.site_header = "ProCaller Admin"
@@ -25,6 +27,7 @@ urlpatterns = [
     path("api/", include("campaigns.urls")),
     path("api/", include("crm.urls")),
     path("api/", include("telephony.urls")),
+    path("media/tts/<path:name>", TtsAudioView.as_view(), name="tts-audio"),
 ]
 
 if settings.DEBUG or os.getenv("SERVE_MEDIA", "1") == "1":

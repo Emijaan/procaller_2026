@@ -157,14 +157,37 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
     showToast(`${data.valid_rows} valid · ${data.invalid_rows} invalid · ${data.duplicate_rows} duplicate`, 'info');
   };
 
+  const downloadIbr = async (camp: Campaign) => {
+    const token = localStorage.getItem('procaller.access') || '';
+    const res = await fetch(`/api/reports/export/?kind=ibr&file=csv&campaign=${camp.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      let detail = 'Report download failed';
+      try { detail = (await res.json()).detail || detail; } catch { /* CSV errors still throw below */ }
+      throw new Error(detail);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${camp.name || 'ibr'}-report.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const confirmExcel = async () => {
     if (!pendingFile || !preview) return;
     const id = await ensureCampaign();
+    const threads = Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1));
+    if (draft.campaign_type === 'ibr') {
+      await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ tts_prompt: draft.tts_prompt, dial_ratio: threads }) });
+    }
     const token = localStorage.getItem('procaller.access') || '';
     const body = new FormData();
     body.append('file', pendingFile);
     body.append('job_id', String(preview.job_id));
-    body.append('dial_threads', String(Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1))));
+    body.append('dial_threads', String(threads));
     const result = await fetch(`/api/campaigns/${id}/import/`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
@@ -173,8 +196,11 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
       if (!r.ok) throw new Error((await r.json()).detail || 'Import failed');
       return r.json();
     });
-    setImportResult(`Imported ${result.imported} · Invalid ${result.invalid} · Total ${result.total_leads}`);
-    showToast(`Imported ${result.imported} leads`, 'success');
+    const speech = result.speech === 'started'
+      ? `Approved ${result.imported} numbers. Speech is generating and ${result.threads} threads will dial.`
+      : `Imported ${result.imported} leads`;
+    setImportResult(speech);
+    showToast(speech, 'success');
     load();
   };
 
@@ -203,7 +229,12 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
       if (!r.ok) throw new Error((await r.json()).detail || 'Import failed');
       return r.json();
     });
-    showToast(`Imported ${result.imported} numbers · ${camp.dial_ratio || 1} threads`, 'success');
+    showToast(
+      camp.campaign_type === 'ibr'
+        ? `Approved ${result.imported} numbers. Speech is generating and ${result.threads || camp.dial_ratio || 1} threads will dial.`
+        : `Imported ${result.imported} numbers · ${camp.dial_ratio || 1} threads`,
+      'success',
+    );
     load();
   };
 
@@ -229,22 +260,27 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
   };
 
   const visible = campaigns.filter((c) => {
+    if (tab === 'ibr') return c.campaign_type === 'ibr';
     if (tab === 'all') return true;
     if (tab === 'active') return c.status === 'active' || c.status === 'running';
     return c.status === tab;
   });
+  const tabs = [
+    { label: 'All', id: 'all', count: campaigns.length },
+    { label: 'Running', id: 'running', count: campaigns.filter((c) => c.status === 'running' || c.status === 'active').length },
+    { label: 'Paused', id: 'paused', count: campaigns.filter((c) => c.status === 'paused').length },
+    { label: 'Draft', id: 'draft', count: campaigns.filter((c) => c.status === 'draft').length },
+  ];
+  if (campaigns.some((c) => c.campaign_type === 'ibr') || user?.organization?.ibr_enabled) {
+    tabs.splice(1, 0, { label: 'IBR', id: 'ibr', count: campaigns.filter((c) => c.campaign_type === 'ibr').length });
+  }
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#F8FAFC] fade-in">
       <div className="max-w-[1200px] mx-auto px-6 py-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            {[
-              { label: 'All', id: 'all', count: campaigns.length },
-              { label: 'Running', id: 'running', count: campaigns.filter((c) => c.status === 'running' || c.status === 'active').length },
-              { label: 'Paused', id: 'paused', count: campaigns.filter((c) => c.status === 'paused').length },
-              { label: 'Draft', id: 'draft', count: campaigns.filter((c) => c.status === 'draft').length },
-            ].map((item) => (
+            {tabs.map((item) => (
               <button key={item.id} onClick={() => setTab(item.id === 'running' ? 'active' : item.id)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-white border transition-all ${tab === item.id || (item.id === 'running' && tab === 'active') ? 'border-[#4F46E5] text-[#4F46E5]' : 'border-[#E2E8F0] text-slate-600 hover:border-[#4F46E5]/30'}`}>
                 {item.label}
                 <span className="bg-slate-100 text-slate-500 text-xs px-1.5 py-0.5 rounded-full">{item.count}</span>
@@ -260,7 +296,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <h3 className="font-semibold text-slate-900 text-base">{camp.name}</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">{camp.dial_method}{camp.auto_running ? ' · auto on' : ''} · wrap {camp.wrap_up_seconds ?? 30}s · {camp.dial_ratio ?? 1} threads · {camp.lead_count || 0} leads</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{camp.campaign_type === 'ibr' ? 'IBR · ' : ''}{camp.dial_method}{camp.auto_running ? ' · auto on' : ''} · wrap {camp.wrap_up_seconds ?? 30}s · {camp.dial_ratio ?? 1} threads · {camp.lead_count || 0} leads</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant={statusVariant(camp.status)} dot={camp.status === 'running' || camp.status === 'active'}>{prettyStatus(camp.status)}</Badge>
@@ -298,13 +334,16 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   <Button variant="primary" size="sm" className="flex-1" onClick={() => setStatus(camp, 'active')}>🚀 Launch</Button>
                 )}
                 {can(user, 'import_leads') && !camp.auto_running && (camp.status === 'active' || camp.status === 'running') && (
-                  <Button variant="primary" size="sm" className="flex-1" onClick={() => api(`/api/campaigns/${camp.id}/`, { method: 'PATCH', body: JSON.stringify({ auto_running: true, dial_method: 'power', status: 'running', dial_ratio: Math.min(32, Math.max(1, camp.dial_ratio || 1)) }) }).then(() => { showToast('Auto dial started', 'success'); load(); }).catch((err) => showToast(err.message, 'error'))}>Start auto</Button>
+                  <Button variant="primary" size="sm" className="flex-1" onClick={() => api(`/api/campaigns/${camp.id}/`, { method: 'PATCH', body: JSON.stringify({ auto_running: true, dial_method: camp.campaign_type === 'ibr' ? camp.dial_method : 'power', status: 'running', dial_ratio: Math.min(32, Math.max(1, camp.dial_ratio || 1)) }) }).then(() => { showToast(camp.campaign_type === 'ibr' ? 'IBR threads started' : 'Auto dial started', 'success'); load(); }).catch((err) => showToast(err.message, 'error'))}>{camp.campaign_type === 'ibr' ? 'Start threads' : 'Start auto'}</Button>
                 )}
                 {can(user, 'import_leads') && camp.auto_running && (
                   <Button variant="secondary" size="sm" className="flex-1" onClick={() => api(`/api/campaigns/${camp.id}/`, { method: 'PATCH', body: JSON.stringify({ auto_running: false }) }).then(() => { showToast('Auto dial stopped', 'success'); load(); }).catch((err) => showToast(err.message, 'error'))}>Stop auto</Button>
                 )}
                 {camp.campaign_type === 'ibr' && can(user, 'edit_campaign') && (
-                  <Button variant="secondary" size="sm" onClick={() => api(`/api/campaigns/${camp.id}/tts/`, { method: 'POST', body: '{}' }).then((res) => { const row = res as { ready?: number; failed?: number }; showToast(`Speech ready ${row.ready || 0}, failed ${row.failed || 0}`, row.failed ? 'info' : 'success'); }).catch((err) => showToast(err.message, 'error'))}>Generate speech</Button>
+                  <Button variant="secondary" size="sm" onClick={() => api(`/api/campaigns/${camp.id}/tts/`, { method: 'POST', body: '{}' }).then((res) => { const row = res as { ready?: number; failed?: number }; showToast(`Speech ready ${row.ready || 0}, failed ${row.failed || 0}`, row.failed ? 'info' : 'success'); }).catch((err) => showToast(err.message, 'error'))}>Regenerate speech</Button>
+                )}
+                {camp.campaign_type === 'ibr' && can(user, 'view_reports') && (
+                  <Button variant="outline" size="sm" onClick={() => downloadIbr(camp).catch((err) => showToast(err.message, 'error'))}>Download report</Button>
                 )}
                 <Button variant="outline" size="sm" onClick={() => openLeads(camp).catch(() => undefined)}>Leads</Button>
                 {can(user, 'edit_campaign') && (
@@ -351,10 +390,10 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                     }}
                   />
                   <label className="h-8 px-3 inline-flex items-center rounded-lg border border-[#E2E8F0] text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer">
-                    Upload Excel
+                    {camp.campaign_type === 'ibr' ? 'Approve file' : 'Upload Excel'}
                     <input
                       type="file"
-                      accept=".xlsx,.xls"
+                      accept=".csv,.xlsx,.xls"
                       className="hidden"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
@@ -367,7 +406,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               )}
               <p className="text-[10px] text-slate-400 mt-2">
                 Hold audio: {camp.has_hold_audio ? (camp.hold_audio_name || 'Uploaded MP3') : 'Default tone · MP3 up to 5MB'}
-                {camp.auto_running ? ' · Answered calls go to users seated in Preview Auto.' : ''}
+                {camp.campaign_type === 'ibr' ? ' · An answered call plays that number’s WAV, then hangs up.' : camp.auto_running ? ' · Answered calls go to users seated in Preview Auto.' : ''}
               </p>
             </Card>
           ))}
@@ -431,9 +470,9 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
               <label className="border-2 border-dashed border-[#E2E8F0] rounded-xl p-10 text-center hover:border-[#4F46E5]/40 transition-colors cursor-pointer block">
                 <div className="text-3xl mb-2">📊</div>
                 <p className="text-sm font-medium text-slate-700">Drop Excel file or click to browse</p>
-                <p className="text-xs text-slate-400 mt-1">Mobile column is mandatory. Other columns are stored dynamically.</p>
+                <p className="text-xs text-slate-400 mt-1">{draft.campaign_type === 'ibr' ? 'Approving builds one WAV per number from its columns and dials that many threads.' : 'CSV or Excel. Mobile is mandatory. Other columns are stored dynamically.'}</p>
                 {importResult && <p className="text-xs text-green-600 mt-2">{importResult}</p>}
-                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => {
+                <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) previewExcel(file).catch((err) => showToast(err.message, 'error'));
                 }} />
@@ -447,7 +486,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                     <div><p className="text-sm font-bold text-slate-600">{preview.duplicate_rows}</p><p className="text-[10px] text-slate-400">Duplicates</p></div>
                   </div>
                   <p className="text-xs text-slate-500">Mobile column: {preview.mobile_column}</p>
-                  <Button variant="primary" size="sm" onClick={() => confirmExcel().catch((err) => showToast(err.message, 'error'))}>Confirm import</Button>
+                  <Button variant="primary" size="sm" onClick={() => confirmExcel().catch((err) => showToast(err.message, 'error'))}>{draft.campaign_type === 'ibr' ? 'Approve file' : 'Confirm import'}</Button>
                 </div>
               )}
             </div>
@@ -505,7 +544,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   <input type="number" min={0} className="w-32 h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none" value={draft.wrap_up_seconds} onChange={(e) => setDraft({ ...draft, wrap_up_seconds: e.target.value })} />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">{draft.dial_method === 'power' ? 'Threads at once (1–32)' : 'Dial ratio (1–32)'}</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">{draft.campaign_type === 'ibr' || draft.dial_method === 'power' ? 'Threads at once (1–32)' : 'Dial ratio (1–32)'}</label>
                   <input type="number" min={1} max={32} className="w-32 h-9 rounded-lg border border-[#E2E8F0] px-3 text-sm focus:outline-none" value={draft.dial_ratio} onChange={(e) => setDraft({ ...draft, dial_ratio: e.target.value })} />
                 </div>
               </div>
@@ -555,7 +594,9 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   if (step < totalSteps) {
                     setStep((p) => p + 1);
                   } else {
-                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ status: draft.dial_method === 'power' ? 'running' : 'active', dial_method: draft.dial_method, auto_running: draft.dial_method === 'power', assigned_users: assigned, wrap_up_seconds: Number(draft.wrap_up_seconds) || 30, dial_ratio: Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1)), code: draft.code }) });
+                    const threads = Math.min(32, Math.max(1, Number(draft.dial_ratio) || 1));
+                    const ibr = draft.campaign_type === 'ibr';
+                    await api(`/api/campaigns/${id}/`, { method: 'PATCH', body: JSON.stringify({ status: ibr || draft.dial_method === 'power' ? 'running' : 'active', dial_method: draft.dial_method, auto_running: ibr || draft.dial_method === 'power', assigned_users: assigned, wrap_up_seconds: Number(draft.wrap_up_seconds) || 30, dial_ratio: threads, code: draft.code }) });
                     showToast('Campaign saved', 'success');
                     resetWizard();
                     load();
@@ -620,7 +661,12 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
 
       <Modal open={!!leadCamp} onClose={() => { setLeadCamp(null); setLeadBoard(null); }} title={`Leads · ${leadCamp?.name || ''}`} size="xl">
         <div className="space-y-3">
-          <p className="text-sm text-slate-500">Same uploaded rows. Call status, duration, agent and disposition update here. Other columns stay as uploaded.</p>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm text-slate-500">Same uploaded rows. Call status, duration, agent and disposition update here. Other columns stay as uploaded.</p>
+            {leadCamp?.campaign_type === 'ibr' && can(user, 'view_reports') && (
+              <Button variant="outline" size="sm" onClick={() => downloadIbr(leadCamp).catch((err) => showToast(err.message, 'error'))}>Download report</Button>
+            )}
+          </div>
           <div className="overflow-auto max-h-[28rem] border border-[#E2E8F0] rounded-xl">
             <table className="min-w-full text-xs">
               <thead className="bg-slate-50 text-slate-500 sticky top-0">

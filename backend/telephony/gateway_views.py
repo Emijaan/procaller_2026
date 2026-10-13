@@ -1,4 +1,4 @@
-from django.http import HttpResponse
+from django.http import FileResponse, HttpResponse
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,6 +13,8 @@ def _port_payload(port):
     return {
         "id": port.id,
         "name": port.name,
+        "synway_port": port.synway_port,
+        "sip_account": port.sip_account,
         "dial_prefix": port.dial_prefix,
         "caller_id": port.caller_id,
         "is_active": port.is_active,
@@ -101,9 +103,18 @@ class GsmPortListCreateView(APIView):
         name = (request.data.get("name") or "").strip()
         if not group or not name:
             return Response({"detail": "Choose a port group and a channel name"}, status=400)
+        raw_port = request.data.get("synway_port")
+        synway_port = None
+        if raw_port not in (None, ""):
+            try:
+                synway_port = int(raw_port)
+            except (TypeError, ValueError):
+                return Response({"detail": "Synway port must be a number"}, status=400)
         row = GsmPort.objects.create(
             group=group,
             name=name,
+            synway_port=synway_port,
+            sip_account=(request.data.get("sip_account") or "").strip(),
             dial_prefix=(request.data.get("dial_prefix") or "").strip(),
             caller_id=(request.data.get("caller_id") or "").strip(),
         )
@@ -120,3 +131,18 @@ class InboundRouteView(APIView):
             return HttpResponse("", status=403, content_type="text/plain")
         extension = resolve_inbound(request.query_params.get("caller"), request.query_params.get("did"))
         return HttpResponse(extension, content_type="text/plain")
+
+
+class TtsAudioView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, name):
+        if not name or ".." in name or name.startswith("/"):
+            return Response(status=404)
+        from accounts.access import scoped_leads
+        from crm.models import Contact
+
+        lead = scoped_leads(request.user, Contact.objects.filter(tts_audio=f"tts/{name}")).first()
+        if not lead or not lead.tts_audio:
+            return Response(status=404)
+        return FileResponse(lead.tts_audio.open("rb"), content_type="audio/wav")

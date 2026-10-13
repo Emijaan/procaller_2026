@@ -75,6 +75,7 @@ class User(AbstractUser):
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.AGENT)
     team = models.CharField(max_length=80, blank=True, default="")
+    pc_number = models.PositiveIntegerField(null=True, blank=True, unique=True)
     extension = models.CharField(max_length=16, blank=True, default="")
     sip_username = models.CharField(max_length=64, blank=True, default="")
     sip_password = models.CharField(max_length=128, blank=True, default="")

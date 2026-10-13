@@ -2,6 +2,7 @@ import logging
 import re
 import threading
 import time
+from pathlib import Path
 
 from django.conf import settings
 
@@ -29,31 +30,37 @@ def next_extension():
     raise ValueError("No free SIP extensions left (2100-2199)")
 
 
+def next_pc_number():
+    taken = set(User.objects.exclude(pc_number=None).values_list("pc_number", flat=True))
+    number = 1
+    while number in taken:
+        number += 1
+    return number
+
+
 def ensure_sip_identity(user):
-    """Give the user a 21xx WebRTC identity if they do not already have one."""
+    """Assign a PC number and extension once. An existing number is left as it is."""
     if not user:
         return user
-    ext = (user.extension or user.sip_username or "").strip()
-    if ext:
-        fields = []
-        if not (user.extension or "").strip():
-            user.extension = ext
-            fields.append("extension")
-        if not (user.sip_username or "").strip():
-            user.sip_username = ext
-            fields.append("sip_username")
-        if not (user.sip_password or "").strip():
-            user.sip_password = ext
-            fields.append("sip_password")
-        if fields:
-            user.save(update_fields=fields)
-        return user
-    ext = next_extension()
-    user.extension = ext
-    user.sip_username = ext
-    user.sip_password = ext
-    user.save(update_fields=["extension", "sip_username", "sip_password"])
-    logger.info("Assigned SIP extension %s to %s", ext, user.email)
+    fields = []
+    ext = (user.extension or "").strip()
+    if not ext:
+        ext = next_extension()
+        user.extension = ext
+        fields.append("extension")
+    if (user.sip_username or "").strip() != ext:
+        user.sip_username = ext
+        fields.append("sip_username")
+    if not (user.sip_password or "").strip():
+        user.sip_password = ext
+        fields.append("sip_password")
+    if not user.pc_number:
+        user.pc_number = next_pc_number()
+        fields.append("pc_number")
+    if fields:
+        user.save(update_fields=fields)
+        logger.info("Locked PC %s extension %s on %s", user.pc_number, user.extension, user.email)
+    publish_webrtc_endpoint(user.extension, user.sip_password or user.extension)
     return user
 
 
@@ -106,19 +113,44 @@ def live_webrtc_endpoints():
     return found
 
 
+def _agent_config_path():
+    return Path(settings.BASE_DIR) / "asterisk" / "pjsip_agents.conf"
+
+
+def _static_webrtc_endpoints():
+    path = Path("/etc/asterisk/pjsip_procaller.conf")
+    try:
+        text = path.read_text()
+    except OSError:
+        return {str(n) for n in range(FIRST_EXT, FIRST_EXT + 3)}
+    return set(re.findall(r"^\[(21\d{2})\]\(procaller-webrtc\)", text, re.M))
+
+
+def publish_webrtc_endpoint(ext, password):
+    """Add this extension to the agent PJSIP file. A number already in use is not rewritten."""
+    ext = (ext or "").strip()
+    if not ext.isdigit() or (getattr(settings, "TELEPHONY_BACKEND", "") or "").lower() != "asterisk":
+        return
+    if ext in _static_webrtc_endpoints():
+        return
+    path = _agent_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = path.read_text() if path.exists() else "; ProCaller agent extensions. Numbers here do not change.\n"
+    if re.search(rf"^\[{re.escape(ext)}\]\(procaller-webrtc\)", current, re.M):
+        return
+    path.write_text(current.rstrip() + "\n\n" + render_webrtc_endpoint(ext, password or ext))
+    try:
+        from telephony.ami import cli_output
+
+        cli_output("module reload res_pjsip.so")
+    except Exception:
+        logger.warning("PJSIP reload did not run after adding extension %s", ext)
+
+
 def sip_login_for(user):
-    """Return a SIP username/password that Asterisk will actually accept."""
+    """Return this account's own extension. It is never replaced with another phone."""
     ensure_sip_identity(user)
-    username = (user.sip_username or user.extension or "").strip()
+    username = (user.extension or user.sip_username or "").strip()
     password = (user.sip_password or username).strip()
-    live = live_webrtc_endpoints()
-    if username and username in live:
-        return username, password
-    fallback = next((ext for ext in ("2100", "2101", "2102") if ext in live), None) or next(iter(live), "2100")
-    logger.warning(
-        "Asterisk has no PJSIP endpoint for %s (%s); registering as %s so the call can proceed",
-        user.email,
-        username,
-        fallback,
-    )
-    return fallback, fallback
+    publish_webrtc_endpoint(username, password)
+    return username, password

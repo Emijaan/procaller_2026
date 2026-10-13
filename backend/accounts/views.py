@@ -252,9 +252,6 @@ class StaffListCreateView(APIView):
                 first_name=request.data.get("first_name") or "",
                 last_name=request.data.get("last_name") or "",
                 team=request.data.get("team") or "",
-                extension=request.data.get("extension") or "",
-                sip_username=request.data.get("sip_username") or request.data.get("extension") or "",
-                sip_password=request.data.get("sip_password") or request.data.get("extension") or "",
                 max_admins=int(request.data.get("max_admins") or 5),
                 max_users=int(request.data.get("max_users") or 50),
             )

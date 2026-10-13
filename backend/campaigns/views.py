@@ -1,3 +1,5 @@
+import csv
+import io
 import re
 from datetime import datetime
 
@@ -204,6 +206,32 @@ def _normalize_mobile(value):
     return digits
 
 
+def _read_csv(file_obj):
+    raw = file_obj.read()
+    if isinstance(raw, str):
+        text = raw
+    else:
+        text = raw.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    headers = [str(h).strip() for h in (reader.fieldnames or []) if h and str(h).strip()]
+    if not headers:
+        raise ValueError("No column headers found")
+    records = []
+    for idx, row in enumerate(reader, start=2):
+        item = {header: "" if row.get(header) is None else str(row.get(header)).strip() for header in headers}
+        if any(item.values()):
+            item["_row"] = idx
+            records.append(item)
+    return headers, records
+
+
+def _read_sheet(upload):
+    name = (upload.name or "").lower()
+    if name.endswith(".csv"):
+        return _read_csv(upload)
+    return _read_excel(upload)
+
+
 def _read_excel(file_obj):
     from openpyxl import load_workbook
 
@@ -250,14 +278,14 @@ class CampaignImportPreviewView(APIView):
             return Response({"detail": "Not found"}, status=404)
         upload = request.FILES.get("file")
         if not upload:
-            return Response({"detail": "Upload an Excel file"}, status=400)
+            return Response({"detail": "Upload a CSV or Excel file"}, status=400)
         name = (upload.name or "").lower()
-        if not name.endswith((".xlsx", ".xls")):
-            return Response({"detail": "Only .xlsx Excel files are allowed"}, status=400)
+        if not name.endswith((".csv", ".xlsx", ".xls")):
+            return Response({"detail": "Upload a .csv, .xlsx, or .xls file"}, status=400)
         if upload.size and upload.size > 15 * 1024 * 1024:
             return Response({"detail": "File is too large (max 15MB)"}, status=400)
         try:
-            headers, records = _read_excel(upload)
+            headers, records = _read_sheet(upload)
         except Exception as exc:
             return Response({"detail": str(exc)}, status=400)
         mobile_key = _find_mobile_key(headers)
@@ -317,13 +345,20 @@ class CampaignImportConfirmView(APIView):
         camp = _scope(request).filter(pk=pk).first()
         if not camp:
             return Response({"detail": "Not found"}, status=404)
+        is_ibr = camp.campaign_type == Campaign.CampaignType.IBR
+        if is_ibr:
+            denied = _reject_ibr(request.user, camp.agency)
+            if denied:
+                return denied
+            if not (camp.tts_prompt or "").strip():
+                return Response({"detail": "Write a speech prompt before approving the file"}, status=400)
         job = ImportJob.objects.filter(pk=request.data.get("job_id"), campaign=camp).first()
         if not job:
             return Response({"detail": "Import preview not found. Upload the file again."}, status=400)
         upload = request.FILES.get("file")
         if not upload:
             return Response({"detail": "Upload the same Excel file to confirm import"}, status=400)
-        headers, records = _read_excel(upload)
+        headers, records = _read_sheet(upload)
         mobile_key = job.mapping.get("mobile") or _find_mobile_key(headers)
         try:
             threads = max(1, min(32, int(request.data.get("dial_threads") or job.dial_threads or camp.dial_ratio or 1)))
@@ -367,6 +402,7 @@ class CampaignImportConfirmView(APIView):
                     campaign=camp,
                     agency=camp.agency or agency_of(request.user),
                     lead_status=Contact.LeadStatus.NEW,
+                    tts_status="pending" if is_ibr else "",
                     owner=None,
                     assigned_admin=request.user if request.user.normalized_role == User.Role.ADMIN else camp.admin,
                 )
@@ -381,14 +417,31 @@ class CampaignImportConfirmView(APIView):
         job.invalid_rows = len(errors)
         job.save()
         camp.dial_ratio = threads
-        camp.save(update_fields=["dial_ratio", "updated_at"])
-        write_audit(request.user, "excel_import", "campaign", camp.id, request, {"imported": len(created)})
+        update_fields = ["dial_ratio", "updated_at"]
+        if is_ibr and created:
+            camp.auto_running = True
+            camp.status = Campaign.Status.RUNNING
+            camp.active = True
+            update_fields.extend(["auto_running", "status", "active"])
+        camp.save(update_fields=update_fields)
+        if is_ibr and created:
+            from telephony.tts import queue_ibr_speech
+
+            ids = [row.id for row in created if row.id]
+            if len(ids) != len(created):
+                ids = list(
+                    Contact.objects.filter(campaign=camp, phone__in=[row.phone for row in created]).values_list("id", flat=True)
+                )
+            queue_ibr_speech(camp.id, ids)
+        write_audit(request.user, "excel_import", "campaign", camp.id, request, {"imported": len(created), "threads": threads})
         return Response(
             {
                 "imported": len(created),
                 "invalid": len(errors),
                 "errors": errors[:50],
                 "total_leads": camp.contacts.count(),
+                "threads": threads,
+                "speech": "started" if is_ibr and created else "",
             }
         )
 

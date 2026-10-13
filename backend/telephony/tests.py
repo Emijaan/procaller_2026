@@ -439,6 +439,24 @@ class SipProvisionTests(TestCase):
         self.assertEqual(newbie.extension, "2101")
         self.assertEqual(newbie.sip_username, "2101")
         self.assertEqual(newbie.sip_password, "2101")
+        self.assertEqual(newbie.pc_number, 1)
+        again = User.objects.get(pk=newbie.pk)
+        ensure_sip_identity(again)
+        again.refresh_from_db()
+        self.assertEqual(again.extension, "2101")
+        self.assertEqual(again.pc_number, 1)
+
+    def test_login_uses_the_accounts_own_extension(self):
+        from telephony.sip_provision import ensure_sip_identity, sip_login_for
+
+        user = User.objects.create_user(
+            email="own@test.com", password="x", role=User.Role.USER, extension="2103", sip_username="2100"
+        )
+        ensure_sip_identity(user)
+        user.refresh_from_db()
+        self.assertEqual(user.extension, "2103")
+        self.assertEqual(user.sip_username, "2103")
+        self.assertEqual(sip_login_for(user)[0], "2103")
 
     def test_session_start_assigns_sip_identity(self):
         from telephony.services import start_session

@@ -80,7 +80,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
   const [confirm, setConfirm] = useState<{ person: User; action: 'delete' | 'deactivate' } | null>(null);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<StaffForm>(emptyForm);
-  const [ports, setPorts] = useState<{ id: number; name: string; assigned_user: number | null; caller_id: string }[]>([]);
+    const [ports, setPorts] = useState<{ id: number; name: string; assigned_user: number | null; caller_id: string; sip_account?: string }[]>([]);
 
   const isSuper = isSuperActor(user);
 
@@ -95,7 +95,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
   useEffect(() => {
     if (!open || (form.role !== 'user' && form.role !== 'agent')) return;
     const query = form.organization ? `?agency=${form.organization}` : '';
-    api<{ id: number; name: string; assigned_user: number | null; caller_id: string }[]>(`/api/telephony/ports/${query}`)
+    api<{ id: number; name: string; assigned_user: number | null; caller_id: string; sip_account?: string }[]>(`/api/telephony/ports/${query}`)
       .then(setPorts)
       .catch(() => setPorts([]));
   }, [open, form.role, form.organization]);
@@ -260,6 +260,8 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
             <tr>
               <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Person</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase whitespace-nowrap">Actions</th>
+              <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">PC</th>
+              <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Extension</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Role</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Agency</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Reports to</th>
@@ -297,6 +299,8 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
                     <span className="text-xs text-slate-400">—</span>
                   )}
                 </td>
+                <td className="px-3 py-3.5 font-mono text-slate-700">{person.pc_number || '—'}</td>
+                <td className="px-3 py-3.5 font-mono text-slate-700">{person.extension || '—'}</td>
                 <td className="px-3 py-3.5"><Badge>{roleLabel(person.role_normalized || person.role)}</Badge></td>
                 <td className="px-3 py-3.5 text-slate-600">{person.organization?.name || '—'}</td>
                 <td className="px-3 py-3.5 text-slate-600">{person.reports_to_name || '—'}</td>
@@ -311,7 +315,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
             ))}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-sm text-slate-400">No accounts match this filter.</td>
+                <td colSpan={10} className="px-4 py-12 text-center text-sm text-slate-400">No accounts match this filter.</td>
               </tr>
             )}
           </tbody>
@@ -319,6 +323,14 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
       </div>
       <Modal open={open} onClose={() => setOpen(false)} title={editing ? 'Edit account' : 'Add account'} size="lg">
         <div className="space-y-3">
+          {editing ? (
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="PC number" value={String(editing.pc_number || '')} readOnly />
+              <Input label="Extension" value={editing.extension || ''} readOnly />
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500">A PC number and an extension are assigned when this account is saved. They stay with the account.</p>
+          )}
           <Input label="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
           <div className="grid grid-cols-2 gap-3">
             <Input label="First name" value={form.first_name} onChange={(e) => setForm({ ...form, first_name: e.target.value })} />
@@ -357,7 +369,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
                 { value: '', label: 'Select channel' },
                 ...ports
                   .filter((port) => !port.assigned_user || port.assigned_user === editing?.id)
-                  .map((port) => ({ value: String(port.id), label: `${port.name}${port.caller_id ? ` · ${port.caller_id}` : ''}` })),
+                  .map((port) => ({ value: String(port.id), label: `${port.name}${port.sip_account ? ` ${port.sip_account}` : ''}${port.caller_id ? ` · ${port.caller_id}` : ''}` })),
               ]}
             />
           )}

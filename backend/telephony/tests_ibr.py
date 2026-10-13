@@ -189,3 +189,212 @@ class IbrPiperTests(TestCase):
         res = client.get("/api/telephony/inbound/", {"caller": "9811111111", "did": "9800000001"})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.content, b"2101")
+
+    def test_csv_import_and_speech_file_stay_in_the_agency(self):
+        from django.core.files.base import ContentFile
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from telephony.models import GsmPort
+
+        camp = Campaign.objects.create(name="CSV Camp", agency=self.org, created_by=self.agency, status=Campaign.Status.ACTIVE)
+        client = self._login("agency@ibr.test")
+        preview = client.post(
+            f"/api/campaigns/{camp.id}/import/preview/",
+            {"file": SimpleUploadedFile("leads.csv", b"mobile,customer_name\n9811111111,Asha\n", content_type="text/csv")},
+            format="multipart",
+        )
+        self.assertEqual(preview.status_code, 200, preview.data)
+        self.assertEqual(preview.data["valid_rows"], 1)
+        self.assertIn("customer_name", preview.data["headers"])
+        lead = Contact.objects.create(name="Asha", phone="9811111111", agency=self.org, campaign=camp)
+        lead.tts_audio.save("lead.wav", ContentFile(b"RIFF" + b"\x00" * 40), save=True)
+        path = "/media/" + lead.tts_audio.name
+        own = client.get(path)
+        self.assertEqual(own.status_code, 200)
+        self.assertTrue(b"".join(own.streaming_content).startswith(b"RIFF"))
+        other = self._login("other@ibr.test")
+        self.assertEqual(other.get(path).status_code, 404)
+        anon = APIClient()
+        self.assertEqual(anon.get(path).status_code, 401)
+        observed = GsmPort.objects.filter(synway_port=3, sip_account="8003").first()
+        self.assertIsNotNone(observed)
+        self.assertEqual(observed.caller_id, "")
+        self.assertEqual(observed.dial_prefix, "")
+        self.assertFalse(GsmPort.objects.get(synway_port=9).is_active)
+
+    @override_settings(IBR_APPROVE_INLINE=True)
+    def test_approving_an_ibr_file_builds_each_wave_and_records_outcomes(self):
+        import csv
+        from io import StringIO
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from django.core.files.base import ContentFile
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from telephony.ami import _handle_event
+        from telephony.hopper import fill_ibr
+
+        self.org.ibr_enabled = True
+        self.org.save(update_fields=["ibr_enabled"])
+        camp = Campaign.objects.create(
+            name="Loan IBR",
+            agency=self.org,
+            created_by=self.agency,
+            campaign_type=Campaign.CampaignType.IBR,
+            tts_prompt="Hello {{customer_name}}, amount {{loan_amount}}.",
+            status=Campaign.Status.DRAFT,
+            dial_ratio=1,
+        )
+        spoken = []
+
+        def fake_synth(text, dest, voice=None):
+            spoken.append(text)
+            Path(dest).write_bytes(b"RIFF" + b"\x00" * 40)
+
+        client = self._login("agency@ibr.test")
+        sheet = SimpleUploadedFile(
+            "leads.csv",
+            b"mobile,customer_name,loan_amount\n9811111111,Asha,1500\n9811111112,Ravi,800\n",
+            content_type="text/csv",
+        )
+        with patch("telephony.tts.voice_path", return_value=Path("/tmp/voice.onnx")), patch("telephony.tts.synthesize", fake_synth):
+            preview = client.post(f"/api/campaigns/{camp.id}/import/preview/", {"file": sheet}, format="multipart")
+            self.assertEqual(preview.status_code, 200, preview.data)
+            sheet.seek(0)
+            approved = client.post(
+                f"/api/campaigns/{camp.id}/import/",
+                {"file": sheet, "job_id": preview.data["job_id"], "dial_threads": "3"},
+                format="multipart",
+            )
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(approved.data["speech"], "started")
+        self.assertEqual(approved.data["threads"], 3)
+        camp.refresh_from_db()
+        self.assertTrue(camp.auto_running)
+        self.assertEqual(camp.status, Campaign.Status.RUNNING)
+        self.assertEqual(camp.dial_ratio, 3)
+        self.assertEqual(spoken, [
+            "Hello Asha, amount 1500.",
+            "Hello Ravi, amount 800.",
+        ])
+        asha = Contact.objects.get(phone="9811111111")
+        ravi = Contact.objects.get(phone="9811111112")
+        self.assertEqual(asha.tts_status, "ready")
+        self.assertEqual(ravi.tts_status, "ready")
+        asha_call = Call.objects.create(
+            agent=self.agency, contact=asha, campaign=camp, phone_number=asha.phone, callerid_token="ibr-asha", state=Call.State.RINGING
+        )
+        _handle_event({
+            "Event": "Hangup",
+            "ActionID": f"ibr-{asha_call.id}",
+            "Channel": "PJSIP/9811111111@gsm222",
+            "Cause": "20",
+            "Cause-txt": "Subscriber switched off",
+        })
+        asha_call.refresh_from_db()
+        self.assertEqual(asha_call.disposition, "Switch Off")
+        ravi_call = Call.objects.create(
+            agent=self.agency, contact=ravi, campaign=camp, phone_number=ravi.phone, callerid_token="ibr-ravi", state=Call.State.RINGING
+        )
+        _handle_event({
+            "Event": "Newstate",
+            "ActionID": f"ibr-{ravi_call.id}",
+            "Channel": "PJSIP/9811111112@gsm222",
+            "ChannelStateDesc": "Up",
+        })
+        _handle_event({
+            "Event": "Hangup",
+            "ActionID": f"ibr-{ravi_call.id}",
+            "Channel": "PJSIP/9811111112@gsm222",
+            "Cause": "16",
+            "Cause-txt": "Normal Clearing",
+        })
+        ravi_call.refresh_from_db()
+        self.assertEqual(ravi_call.disposition, "Connected")
+        self.assertIsNotNone(ravi_call.answered_at)
+        missed = Contact.objects.create(
+            name="Una", phone="9811111113", agency=self.org, campaign=camp, extra_data={"customer_name": "Una"}, tts_status="pending"
+        )
+        Call.objects.create(
+            agent=self.agency,
+            contact=missed,
+            campaign=camp,
+            phone_number=missed.phone,
+            callerid_token="ibr-una",
+            state=Call.State.ENDED,
+            disposition="Connected",
+            outcome="Connected",
+        )
+        report = client.get(f"/api/reports/export/?kind=ibr&file=csv&campaign={camp.id}")
+        self.assertEqual(report.status_code, 200)
+        rows = list(csv.DictReader(StringIO(report.content.decode())))
+        by_phone = {row["phone"]: row for row in rows}
+        self.assertEqual(by_phone["9811111111"]["disposition"], "Switch Off")
+        self.assertEqual(by_phone["9811111111"]["customer_name"], "Asha")
+        self.assertEqual(by_phone["9811111111"]["loan_amount"], "1500")
+        self.assertEqual(by_phone["9811111112"]["disposition"], "Connected")
+        self.assertEqual(by_phone["9811111113"]["disposition"], "Unknown")
+        self.assertEqual(by_phone["9811111113"]["outcome"], "Unknown")
+        other = self._login("other@ibr.test")
+        self.assertEqual(other.get(f"/api/reports/export/?kind=ibr&file=csv&campaign={camp.id}").status_code, 404)
+        user = self._login("user@ibr.test")
+        self.assertEqual(user.get(f"/api/reports/export/?kind=ibr&file=csv&campaign={camp.id}").status_code, 403)
+        self.assertEqual(user.post(f"/api/campaigns/{camp.id}/import/", {"dial_threads": "1"}, format="multipart").status_code, 403)
+
+        manager = User.objects.create_user(
+            email="manager@ibr.test", password="x", role=User.Role.MANAGER, organization=self.org, reports_to=self.agency
+        )
+        admin = User.objects.create_user(
+            email="admin@ibr.test", password="x", role=User.Role.ADMIN, organization=self.org, reports_to=manager
+        )
+        for owner, email, label in ((manager, "manager@ibr.test", "Manager"), (admin, "admin@ibr.test", "Admin")):
+            owned = Campaign.objects.create(
+                name=f"{label} IBR",
+                agency=self.org,
+                created_by=owner,
+                manager=manager,
+                admin=admin if owner == admin else None,
+                campaign_type=Campaign.CampaignType.IBR,
+                tts_prompt="Hello {{customer_name}}.",
+                dial_ratio=1,
+            )
+            staff = self._login(email)
+            upload = SimpleUploadedFile("one.csv", b"mobile,customer_name\n9811111114,Neha\n", content_type="text/csv")
+            with patch("telephony.tts.voice_path", return_value=Path("/tmp/voice.onnx")), patch("telephony.tts.synthesize", fake_synth):
+                preview = staff.post(f"/api/campaigns/{owned.id}/import/preview/", {"file": upload}, format="multipart")
+                self.assertEqual(preview.status_code, 200, preview.data)
+                upload.seek(0)
+                approved = staff.post(
+                    f"/api/campaigns/{owned.id}/import/",
+                    {"file": upload, "job_id": preview.data["job_id"], "dial_threads": "2"},
+                    format="multipart",
+                )
+            self.assertEqual(approved.status_code, 200, approved.data)
+            self.assertEqual(approved.data["threads"], 2)
+            owned.refresh_from_db()
+            self.assertEqual(owned.dial_ratio, 2)
+            self.assertTrue(owned.auto_running)
+            self.assertEqual(Contact.objects.get(campaign=owned).tts_status, "ready")
+            self.assertIn("Hello Neha.", spoken)
+
+        quiet = Campaign.objects.create(
+            name="Quiet IBR",
+            agency=self.org,
+            created_by=self.agency,
+            campaign_type=Campaign.CampaignType.IBR,
+            status=Campaign.Status.RUNNING,
+            auto_running=True,
+            active=True,
+            dial_ratio=1,
+        )
+        waiting = Contact.objects.create(name="Wait", phone="9811111115", agency=self.org, campaign=quiet, tts_status="pending")
+        first = Contact.objects.create(name="One", phone="9811111116", agency=self.org, campaign=quiet, tts_status="ready")
+        second = Contact.objects.create(name="Two", phone="9811111117", agency=self.org, campaign=quiet, tts_status="ready")
+        first.tts_audio.save("one.wav", ContentFile(b"RIFF" + b"\x00" * 40), save=True)
+        second.tts_audio.save("two.wav", ContentFile(b"RIFF" + b"\x00" * 40), save=True)
+        placed = fill_ibr(quiet)
+        self.assertEqual(len(placed), 1)
+        self.assertEqual(Call.objects.filter(campaign=quiet).count(), 1)
+        self.assertNotEqual(placed[0].contact_id, waiting.id)
+        self.assertEqual(Contact.objects.get(pk=second.id).lead_status, Contact.LeadStatus.NEW)
