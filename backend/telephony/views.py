@@ -9,7 +9,7 @@ from accounts.access import agency_of, scoped_calls, scoped_campaigns, scoped_le
 from campaigns.models import Campaign
 from crm.models import Contact
 
-from .modes import clamp_ratio, current_mode, mode_totals, set_agent_mode
+from .modes import current_mode, mode_totals, set_agent_mode
 from .models import AgentModeSession, AgentSession, Call
 from .recordings import (
     apply_recording_filters,
@@ -314,7 +314,15 @@ class AgentModeView(APIView):
                     dial_ratio=request.data.get("dial_ratio"),
                 )
             elif live and request.data.get("dial_ratio") is not None:
-                live.dial_ratio = clamp_ratio(request.data.get("dial_ratio"), live.dial_ratio or 1)
+                from telephony.modes import ratio_for_actor
+
+                source = campaign or live.campaign
+                live.dial_ratio = ratio_for_actor(
+                    request.user,
+                    source,
+                    request.data.get("dial_ratio"),
+                    live.dial_ratio or 1,
+                )
                 if campaign:
                     live.campaign = campaign
                 live.save()

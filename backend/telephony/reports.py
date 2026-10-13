@@ -27,6 +27,7 @@ from campaigns.models import Campaign
 from crm.models import Contact
 from telephony.models import AgentModeSession, Call
 from telephony.modes import day_bounds, mode_totals
+from telephony.causes import announcement, canonical_code
 from telephony.utils import format_duration
 
 CALL_STATES = {"initiating", "ringing", "connected", "on_hold", "ended"}
@@ -38,19 +39,30 @@ ROLE_FILTERS = {
     "user": ["user", "agent"],
 }
 DISPOSITION_CHOICES = [
-    "Connected",
-    "Busy",
-    "No Answer",
-    "Failed",
-    "Cancelled",
-    "Switch Off",
-    "Not Reachable",
-    "Out of Service Area",
-    "Incoming Calls Not Allowed",
-    "Unknown",
+    "CONNECTED",
+    "BUSY",
+    "LINE_BUSY",
+    "NO_ANSWER",
+    "CALL_FAILED",
+    "CALL_REJECTED",
+    "CANCELLED",
+    "SWITCHED_OFF",
+    "NOT_REACHABLE",
+    "OUT_OF_COVERAGE",
+    "INCOMING_NOT_ALLOWED",
+    "INCOMING_BARRED",
+    "INCOMING_NOT_AVAILABLE",
+    "INVALID_NUMBER",
+    "NUMBER_DOES_NOT_EXIST",
+    "TEMPORARILY_UNAVAILABLE",
+    "NETWORK_CONGESTION",
+    "NETWORK_ERROR",
+    "NETWORK_FAILURE",
+    "UNKNOWN_UNCLASSIFIED",
+    "UNKNOWN_ANNOUNCEMENT",
 ]
-CONNECTED_Q = Q(disposition="Connected") | (
-    Q(hangup_cause="ANSWERED") & Q(answered_at__isnull=False) & Q(disposition__in=["", "Connected"])
+CONNECTED_Q = Q(disposition__in=["Connected", "CONNECTED"]) | (
+    Q(hangup_cause__in=["ANSWERED", "CONNECTED"]) & Q(answered_at__isnull=False) & Q(disposition__in=["", "Connected", "CONNECTED"])
 )
 
 
@@ -232,14 +244,29 @@ def _disposition_counts(calls):
 
     return {
         "answered": calls.filter(CONNECTED_Q).count(),
-        "busy": count("Busy", causes=("BUSY",), outcomes=("Busy",)),
-        "no_answer": count("No Answer", causes=("NO_ANSWER", "RINGING_NO_ANSWER"), outcomes=("No Answer",)),
-        "failed": count("Failed", causes=("FAILED",), outcomes=("Failed",)),
-        "switch_off": count("Switch Off"),
-        "not_reachable": count("Not Reachable"),
-        "out_of_service": count("Out of Service Area"),
-        "incoming_not_allowed": count("Incoming Calls Not Allowed"),
-        "unknown": count("Unknown", causes=("UNKNOWN",), outcomes=("Unknown",)),
+        "busy": count("Busy", "BUSY", "BUSY_HI", "LINE_BUSY", causes=("BUSY", "LINE_BUSY", "BUSY_HI"), outcomes=("Busy", "BUSY", "BUSY_HI", "LINE_BUSY")),
+        "no_answer": count("No Answer", "NO_ANSWER", causes=("NO_ANSWER", "RINGING_NO_ANSWER"), outcomes=("No Answer", "NO_ANSWER")),
+        "failed": count(
+            "Failed", "CALL_FAILED", "CALL_FAILED_HI", "CALL_NOT_COMPLETED", "CALL_CANNOT_BE_CONNECTED",
+            "NETWORK_ERROR", "NETWORK_ERROR_HI", "NETWORK_FAILURE", "NETWORK_CONGESTION",
+            causes=("FAILED", "CALL_FAILED", "NETWORK_ERROR", "NETWORK_FAILURE", "NETWORK_CONGESTION"),
+            outcomes=("Failed", "CALL_FAILED", "NETWORK_ERROR", "NETWORK_FAILURE", "NETWORK_CONGESTION"),
+        ),
+        "switch_off": count("Switch Off", "SWITCHED_OFF", "SWITCHED_OFF_HI", causes=("SWITCH_OFF", "SWITCHED_OFF", "SWITCHED_OFF_HI")),
+        "not_reachable": count("Not Reachable", "NOT_REACHABLE", "NOT_REACHABLE_HI", causes=("NOT_REACHABLE", "NOT_REACHABLE_HI")),
+        "out_of_service": count(
+            "Out of Service Area", "OUT_OF_COVERAGE", "OUT_OF_COVERAGE_HI", "OUT_OF_SERVICE_HI",
+            "TEMPORARILY_OUT_OF_SERVICE", "NUMBER_NOT_IN_SERVICE", "NUMBER_DISCONNECTED",
+        ),
+        "incoming_not_allowed": count(
+            "Incoming Calls Not Allowed", "INCOMING_NOT_ALLOWED", "INCOMING_NOT_ALLOWED_HI",
+            "INCOMING_BARRED", "INCOMING_NOT_AVAILABLE", "INCOMING_NOT_AVAILABLE_HI",
+        ),
+        "unknown": count(
+            "Unknown", "UNKNOWN_UNCLASSIFIED", "UNKNOWN_ANNOUNCEMENT", "UNKNOWN_ANNOUNCEMENT_HI",
+            causes=("UNKNOWN", "UNKNOWN_UNCLASSIFIED", "UNKNOWN_ANNOUNCEMENT"),
+            outcomes=("Unknown", "UNKNOWN_UNCLASSIFIED", "UNKNOWN_ANNOUNCEMENT"),
+        ),
     }
 
 
@@ -355,7 +382,7 @@ def ibr_report_rows(user, campaign_id):
     fixed = [
         "campaign", "lead_id", "phone", "name", "audio_status", "audio_error", "attempt",
         "started_at", "duration_seconds", "state", "outcome", "disposition", "hangup_cause",
-        "cause_code", "cause_text",
+        "cause_code", "cause_text", "announcement",
     ]
     if not camp_ids:
         return fixed, [], False
@@ -374,6 +401,8 @@ def ibr_report_rows(user, campaign_id):
             label = source if source not in fixed else f"column_{source}"
             extra_keys.append((source, label))
     headers = fixed + [label for _key, label in extra_keys]
+    from telephony.causes import announcement, canonical_code
+
     rows = []
     for lead in leads:
         attempts = history.get(lead.id) or [None]
@@ -381,11 +410,11 @@ def ibr_report_rows(user, campaign_id):
             disposition = ""
             outcome = ""
             if call:
-                disposition = call.disposition or ""
-                outcome = call.outcome or ""
-                if (disposition == "Connected" or outcome == "Connected") and not call.answered_at:
-                    disposition = "Unknown"
-                    outcome = "Unknown"
+                disposition = canonical_code(call.disposition or "")
+                outcome = canonical_code(call.outcome or "") or disposition
+                if disposition == "CONNECTED" and not call.answered_at:
+                    disposition = "UNKNOWN_UNCLASSIFIED"
+                    outcome = "UNKNOWN_UNCLASSIFIED"
             row = {
                 "campaign": lead.campaign.name if lead.campaign_id else "",
                 "lead_id": lead.id,
@@ -402,6 +431,7 @@ def ibr_report_rows(user, campaign_id):
                 "hangup_cause": call.hangup_cause if call else "",
                 "cause_code": call.cause_code if call else "",
                 "cause_text": call.cause_text if call else "",
+                "announcement": announcement(disposition) if call else "",
             }
             for key, label in extra_keys:
                 value = (lead.extra_data or {}).get(key, "")
@@ -439,7 +469,7 @@ class ReportExportView(APIView):
             headers = [
                 "id", "lead_id", "phone", "campaign", "agency", "agent", "agent_role", "manager",
                 "started_at", "duration_seconds", "state", "outcome", "disposition", "hangup_cause",
-                "cause_code", "cause_text", "attempt", "audio_status",
+                "cause_code", "cause_text", "announcement", "attempt", "audio_status",
             ]
             records = list(_call_export_rows(request.user, request.query_params))
             filename = "call-report"
@@ -511,10 +541,11 @@ def _call_dict(call):
         "duration_seconds": call.duration_seconds,
         "state": call.state,
         "outcome": call.outcome,
-        "disposition": call.disposition,
+        "disposition": canonical_code(call.disposition) or call.disposition,
         "hangup_cause": call.hangup_cause,
         "cause_code": call.cause_code,
         "cause_text": call.cause_text,
+        "announcement": announcement(call.disposition),
         "attempt": getattr(call, "attempt", 1) or 1,
         "audio_status": call.contact.tts_status if call.contact_id else "",
     }

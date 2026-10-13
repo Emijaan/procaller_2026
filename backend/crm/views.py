@@ -5,18 +5,26 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.access import agency_of, is_super_admin, require_perm, scoped_campaigns, scoped_leads, scoped_users
+from accounts.access import agency_of, has_perm, is_super_admin, require_perm, scoped_campaigns, scoped_leads, scoped_users
 from accounts.services import write_audit
 
-from .models import Contact, FollowUp
-from .serializers import ContactSerializer, FollowUpSerializer
+from .models import Contact, FollowUp, ImportJob
+from .serializers import ContactSerializer, FollowUpSerializer, ImportJobSerializer
 
 
 class ContactListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        qs = scoped_leads(request.user, Contact.objects.select_related("owner", "campaign", "agency"))
+        from django.db.models import OuterRef, Subquery
+
+        from telephony.models import Call
+
+        latest_call = Call.objects.filter(contact_id=OuterRef("pk")).order_by("-id")
+        qs = scoped_leads(request.user, Contact.objects.select_related("owner", "campaign", "agency", "import_job")).annotate(
+            latest_call_state=Subquery(latest_call.values("state")[:1]),
+            latest_call_disposition=Subquery(latest_call.values("disposition")[:1]),
+        )
         q = request.query_params.get("q")
         if q:
             qs = qs.filter(Q(name__icontains=q) | Q(phone__icontains=q) | Q(company__icontains=q))
@@ -29,7 +37,19 @@ class ContactListView(APIView):
         owner = request.query_params.get("owner")
         if owner:
             qs = qs.filter(owner_id=owner)
-        return Response(ContactSerializer(qs[:500], many=True).data)
+        active = (request.query_params.get("active") or "").lower()
+        if active in {"0", "false", "inactive"}:
+            qs = qs.filter(status=Contact.Status.INACTIVE)
+        elif active in {"1", "true", "active"}:
+            qs = qs.filter(status=Contact.Status.ACTIVE)
+        import_job = request.query_params.get("import_job")
+        if import_job:
+            qs = qs.filter(import_job_id=import_job)
+        try:
+            limit = min(5000, max(1, int(request.query_params.get("limit") or 1000)))
+        except (TypeError, ValueError):
+            limit = 1000
+        return Response(ContactSerializer(qs.order_by("-id")[:limit], many=True).data)
 
     def post(self, request):
         phone = (request.data.get("phone") or request.data.get("mobile") or "").strip()
@@ -104,8 +124,34 @@ class ContactDetailView(APIView):
         if request.data.get("dnc"):
             contact.dnc = True
             contact.lead_status = Contact.LeadStatus.DNC
+        turning = None
+        if "status" in request.data:
+            require_perm(request.user, "edit_campaign")
+            value = request.data.get("status")
+            if value not in {Contact.Status.ACTIVE, Contact.Status.INACTIVE}:
+                return Response({"detail": "Status must be Active or Inactive"}, status=400)
+            turning = value == Contact.Status.ACTIVE
+            contact.status = value
         contact.save()
+        if turning is not None:
+            from .queue import set_leads_callable
+
+            set_leads_callable(Contact.objects.filter(pk=contact.pk), turning)
+            contact.refresh_from_db()
         return Response(ContactSerializer(contact).data)
+
+    def delete(self, request, pk):
+        require_perm(request.user, "edit_campaign")
+        contact = scoped_leads(request.user, Contact.objects.all()).filter(pk=pk).first()
+        if not contact:
+            return Response({"detail": "Not found"}, status=404)
+        from .queue import delete_leads
+
+        result = delete_leads(Contact.objects.filter(pk=contact.pk))
+        if result["deleted"] == 0:
+            return Response({"detail": "This lead is on a live call"}, status=409)
+        write_audit(request.user, "lead_delete", "contact", pk, request)
+        return Response(result)
 
 
 class LookupLeadView(APIView):
@@ -147,6 +193,91 @@ class NextLeadView(APIView):
         if not nxt:
             return Response({"detail": "No leads available"}, status=404)
         return Response(ContactSerializer(nxt).data)
+
+
+def _scoped_import_jobs(user):
+    from django.db.models import Count, Q
+
+    qs = (
+        ImportJob.objects.filter(status=ImportJob.Status.DONE)
+        .select_related("campaign", "created_by", "agency")
+        .annotate(
+            lead_count=Count("contacts"),
+            inactive_count=Count("contacts", filter=Q(contacts__status=Contact.Status.INACTIVE)),
+        )
+        .order_by("-id")
+    )
+    if is_super_admin(user):
+        return qs
+    org = agency_of(user)
+    if not org or not has_perm(user, "edit_campaign"):
+        return qs.none()
+    return qs.filter(Q(agency=org) | Q(campaign__agency=org))
+
+
+class LeadFileListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        require_perm(request.user, "edit_campaign")
+        return Response(ImportJobSerializer(_scoped_import_jobs(request.user)[:200], many=True).data)
+
+
+class LeadFileDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        require_perm(request.user, "edit_campaign")
+        job = _scoped_import_jobs(request.user).filter(pk=pk).first()
+        if not job:
+            return Response({"detail": "Not found"}, status=404)
+        if "active" not in request.data:
+            return Response({"detail": "active is required"}, status=400)
+        active = request.data.get("active")
+        if isinstance(active, str):
+            active = active.lower() in {"1", "true", "yes"}
+        else:
+            active = bool(active)
+        job.active = active
+        job.save(update_fields=["active", "updated_at"])
+        from .queue import set_leads_callable
+
+        set_leads_callable(Contact.objects.filter(import_job=job), active)
+        job = _scoped_import_jobs(request.user).filter(pk=pk).first()
+        write_audit(request.user, "lead_file_active" if active else "lead_file_inactive", "import_job", job.id, request)
+        return Response(ImportJobSerializer(job).data)
+
+    def delete(self, request, pk):
+        require_perm(request.user, "edit_campaign")
+        job = _scoped_import_jobs(request.user).filter(pk=pk).first()
+        if not job:
+            return Response({"detail": "Not found"}, status=404)
+        from .queue import delete_leads
+
+        result = delete_leads(Contact.objects.filter(import_job=job))
+        write_audit(request.user, "lead_file_delete", "import_job", job.id, request, result)
+        return Response(result)
+
+
+class LeadFileDownloadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        require_perm(request.user, "edit_campaign")
+        job = _scoped_import_jobs(request.user).filter(pk=pk).first()
+        if not job or not job.source_file:
+            return Response({"detail": "File not stored"}, status=404)
+        from django.http import FileResponse
+
+        name = job.file_name or job.source_file.name.rsplit("/", 1)[-1]
+        lower = name.lower()
+        if lower.endswith(".csv"):
+            content_type = "text/csv"
+        elif lower.endswith(".xls"):
+            content_type = "application/vnd.ms-excel"
+        else:
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return FileResponse(job.source_file.open("rb"), as_attachment=True, filename=name, content_type=content_type)
 
 
 class ReleaseLeadView(APIView):

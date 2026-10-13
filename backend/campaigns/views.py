@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 import re
 from datetime import datetime
 
@@ -358,7 +359,13 @@ class CampaignImportConfirmView(APIView):
         upload = request.FILES.get("file")
         if not upload:
             return Response({"detail": "Upload the same Excel file to confirm import"}, status=400)
-        headers, records = _read_sheet(upload)
+        from django.core.files.base import ContentFile
+
+        upload.seek(0)
+        raw = upload.read()
+        named = ContentFile(raw)
+        named.name = upload.name
+        headers, records = _read_sheet(named)
         mobile_key = job.mapping.get("mobile") or _find_mobile_key(headers)
         try:
             threads = max(1, min(32, int(request.data.get("dial_threads") or job.dial_threads or camp.dial_ratio or 1)))
@@ -405,6 +412,7 @@ class CampaignImportConfirmView(APIView):
                     tts_status="pending" if is_ibr else "",
                     owner=None,
                     assigned_admin=request.user if request.user.normalized_role == User.Role.ADMIN else camp.admin,
+                    import_job=job,
                 )
                 created.append(contact)
                 seen.add(mobile)
@@ -413,8 +421,11 @@ class CampaignImportConfirmView(APIView):
         job.status = ImportJob.Status.DONE
         job.imported_rows = len(created)
         job.dial_threads = threads
+        job.active = True
         job.errors = errors[:200]
         job.invalid_rows = len(errors)
+        if raw:
+            job.source_file.save(os.path.basename(upload.name or "leads.xlsx"), ContentFile(raw), save=False)
         job.save()
         camp.dial_ratio = threads
         update_fields = ["dial_ratio", "updated_at"]

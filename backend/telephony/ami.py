@@ -36,13 +36,20 @@ class AmiClient:
         cfg = _cfg()
         self.sock = socket.create_connection((cfg["host"], cfg["port"]), timeout=8)
         self.sock.settimeout(8.0)
-        self._read_block()
-        reply = self.send({"Action": "Login", "Username": cfg["user"], "Secret": cfg["secret"], "Events": "on"})
+        self._read_until(b"\r\n")
+        action_id = uuid.uuid4().hex
+        login = (
+            f"Action: Login\r\nUsername: {cfg['user']}\r\nSecret: {cfg['secret']}\r\n"
+            f"Events: on\r\nActionID: {action_id}\r\n\r\n"
+        )
+        self.sock.sendall(login.encode("utf-8"))
+        block, leftover = self._read_until(b"\r\n\r\n")
+        reply = self._parse(block.decode("utf-8", "replace"))
         if reply.get("Response") != "Success":
-            raise RuntimeError(f"AMI login failed: {reply}")
+            raise RuntimeError(f"AMI login failed: {reply.get('Message') or reply.get('Response')}")
         self.sock.settimeout(1.0)
         self._alive = True
-        thread = threading.Thread(target=self._listen, daemon=True)
+        thread = threading.Thread(target=self._listen, args=(leftover,), daemon=True)
         thread.start()
         logger.info("AMI connected to %s:%s", cfg["host"], cfg["port"])
 
@@ -61,6 +68,16 @@ class AmiClient:
             self._pending.pop(action_id, None)
             raise TimeoutError(f"AMI timeout waiting for {fields.get('Action')}")
         return box.get("msg", {})
+
+    def _read_until(self, marker):
+        data = b""
+        while marker not in data:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("AMI closed")
+            data += chunk
+        head, tail = data.split(marker, 1)
+        return head + marker, tail
 
     def _read_block(self):
         data = b""
@@ -88,8 +105,7 @@ class AmiClient:
                     msg[key] = val
         return msg
 
-    def _listen(self):
-        buf = b""
+    def _listen(self, buf=b""):
         while self._alive:
             try:
                 chunk = self.sock.recv(4096)
@@ -210,12 +226,35 @@ def _customer_channel(call, channel):
     low = channel.lower()
     if "confbridge" in low:
         return False
-    if call.asterisk_channel and channel == call.asterisk_channel:
-        return True
     if "procaller-outbound" in low or "gsm" in low or low.startswith("local/"):
         return True
     phone = "".join(ch for ch in (call.phone_number or "") if ch.isdigit())[-10:]
     return bool(phone and phone in "".join(ch for ch in low if ch.isdigit()))
+
+
+def _extension_from_channel(channel):
+    import re
+
+    match = re.search(r"PJSIP/(\d+)-", channel or "")
+    return match.group(1) if match else ""
+
+
+def _live_call_for_extension(extension):
+    from django.db.models import Q
+
+    from accounts.models import User
+    from telephony.models import Call
+
+    if not extension:
+        return None
+    user = User.objects.filter(Q(extension=extension) | Q(sip_username=extension)).order_by("-id").first()
+    if not user:
+        return None
+    return (
+        Call.objects.filter(agent=user, state__in=[Call.State.INITIATING, Call.State.RINGING])
+        .order_by("-id")
+        .first()
+    )
 
 
 def _find_call(msg):
@@ -267,6 +306,8 @@ def _handle_event(msg):
     from django.utils import timezone
 
     call = _find_call(msg)
+    if event == "DialEnd" and not call and "gsm" in str(msg.get("DestChannel") or "").lower():
+        call = _live_call_for_extension(_extension_from_channel(msg.get("Channel") or ""))
     if not call:
         return
 
@@ -312,8 +353,8 @@ def start_listener():
             try:
                 get_ami()
                 return
-            except Exception:
-                logger.warning("AMI connect attempt %s failed", attempt + 1)
+            except Exception as exc:
+                logger.warning("AMI connect attempt %s failed: %s", attempt + 1, exc)
                 time.sleep(3)
 
     threading.Thread(target=_retry, daemon=True).start()

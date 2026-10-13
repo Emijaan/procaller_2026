@@ -25,6 +25,52 @@ def release_stale_reservations():
         lead.save(update_fields=["lead_status", "reserved_by", "reserved_until", "updated_at"])
 
 
+def set_leads_callable(qs, active):
+    """Turn auto-dial on or off. A live call is left alone; it will not be dialed again."""
+    from telephony.models import Call
+
+    ids = list(qs.values_list("id", flat=True))
+    if not ids:
+        return 0
+    if active:
+        Contact.objects.filter(pk__in=ids).update(status=Contact.Status.ACTIVE)
+        return len(ids)
+    live = Call.objects.filter(
+        contact_id__in=ids, state__in=["initiating", "ringing", "connected", "on_hold"]
+    ).values_list("contact_id", flat=True)
+    Contact.objects.filter(pk__in=ids).update(status=Contact.Status.INACTIVE)
+    quiet = Contact.objects.filter(pk__in=ids).exclude(pk__in=live)
+    quiet.update(reserved_by=None, reserved_until=None)
+    quiet.filter(lead_status=Contact.LeadStatus.CALLING, owner__isnull=False).update(
+        lead_status=Contact.LeadStatus.ASSIGNED
+    )
+    quiet.filter(lead_status=Contact.LeadStatus.CALLING, owner__isnull=True).update(
+        lead_status=Contact.LeadStatus.NEW
+    )
+    return len(ids)
+
+
+def delete_leads(qs):
+    """Remove leads completely. A lead on a live call is left in place. Call history stays."""
+    from telephony.models import Call
+
+    ids = list(qs.values_list("id", flat=True))
+    if not ids:
+        return {"deleted": 0, "skipped": 0}
+    live = set(
+        Call.objects.filter(contact_id__in=ids, state__in=["initiating", "ringing", "connected", "on_hold"]).values_list(
+            "contact_id", flat=True
+        )
+    )
+    removed = 0
+    for lead in Contact.objects.filter(pk__in=ids).exclude(pk__in=live):
+        if lead.tts_audio:
+            lead.tts_audio.delete(save=False)
+        lead.delete()
+        removed += 1
+    return {"deleted": removed, "skipped": len(live)}
+
+
 def release_lead(lead, status=None):
     if not lead:
         return
@@ -85,7 +131,7 @@ def reserve_next_lead(user, campaign_id=None, exclude_ids=None, tts_ready=False)
             elif connection.features.has_select_for_update:
                 locked = locked.select_for_update()
             lead = locked.first()
-            if not lead or lead.dnc:
+            if not lead or lead.dnc or lead.status != Contact.Status.ACTIVE:
                 continue
             if lead.reserved_by_id and lead.reserved_by_id != user.id and lead.reserved_until and lead.reserved_until > now:
                 continue

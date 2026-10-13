@@ -1,7 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import { Badge, Avatar, Button, SearchInput, ScoreRing } from '../ui/index';
-import { api } from '../../api/client';
+import { api, apiBlob, triggerDownload } from '../../api/client';
+import { can } from '../../api/access';
 import type { Contact } from '../../api/types';
+import { useAuth } from '../../context/AuthContext';
+
+interface LeadFile {
+  id: number;
+  file_name: string;
+  campaign: number | null;
+  campaign_name: string;
+  created_by_name: string;
+  imported_rows: number;
+  dial_threads: number;
+  active: boolean;
+  has_file: boolean;
+  lead_count: number;
+  inactive_count: number;
+  created_at: string;
+}
 
 const stageColors: Record<string, string> = {
   New: 'bg-slate-100 border-slate-200',
@@ -46,19 +63,84 @@ function fmtDate(value?: string | null) {
 }
 
 export default function Leads({ showToast }: { showToast: (msg: string, type?: 'success' | 'info' | 'error') => void }) {
+  const { user } = useAuth();
+  const manage = can(user, 'edit_campaign');
   const [leads, setLeads] = useState<Contact[]>([]);
+  const [files, setFiles] = useState<LeadFile[]>([]);
+  const [fileId, setFileId] = useState<number | ''>('');
   const [view, setView] = useState<'table' | 'kanban'>('table');
   const [search, setSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all');
 
-  const load = () => api<Contact[]>('/api/leads/').then(setLeads).catch((err) => showToast(err.message, 'error'));
-  useEffect(() => { load(); }, []);
+  const load = () => {
+    const qs = new URLSearchParams({ limit: '2000' });
+    if (fileId) qs.set('import_job', String(fileId));
+    api<Contact[]>(`/api/leads/?${qs.toString()}`).then(setLeads).catch((err) => showToast(err.message, 'error'));
+    if (manage) {
+      api<LeadFile[]>('/api/lead-files/').then(setFiles).catch((err) => showToast(err.message, 'error'));
+    }
+  };
+  useEffect(() => { load(); }, [fileId, manage]);
 
+  const toggleLead = async (lead: Contact) => {
+    const next = lead.status === 'Inactive' ? 'Active' : 'Inactive';
+    try {
+      await api(`/api/leads/${lead.id}/`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
+      showToast(next === 'Inactive' ? `${lead.name} will not be dialed in auto mode` : `${lead.name} is active again`, 'success');
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not update the lead', 'error');
+    }
+  };
+
+  const toggleFile = async (file: LeadFile) => {
+    const next = !file.active;
+    try {
+      await api(`/api/lead-files/${file.id}/`, { method: 'PATCH', body: JSON.stringify({ active: next }) });
+      showToast(next ? `${file.file_name} is active again` : `${file.file_name} is off. Auto mode will skip these leads.`, 'success');
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not update the file', 'error');
+    }
+  };
+
+  const deleteLead = async (lead: Contact) => {
+    if (!window.confirm(`Delete ${lead.name || lead.phone}? This removes the lead. Call history stays.`)) return;
+    try {
+      await api(`/api/leads/${lead.id}/`, { method: 'DELETE' });
+      showToast(`${lead.name || lead.phone} deleted`, 'success');
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not delete the lead', 'error');
+    }
+  };
+
+  const deleteFileLeads = async (file: LeadFile) => {
+    if (!window.confirm(`Delete every lead from ${file.file_name}? Call history stays.`)) return;
+    try {
+      const result = await api<{ deleted: number; skipped: number }>(`/api/lead-files/${file.id}/`, { method: 'DELETE' });
+      showToast(`Deleted ${result.deleted} lead${result.deleted === 1 ? '' : 's'}${result.skipped ? `. ${result.skipped} still on a call` : ''}`, 'success');
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not delete the leads', 'error');
+    }
+  };
+
+  const downloadFile = async (file: LeadFile) => {
+    try {
+      const { blob, filename } = await apiBlob(`/api/lead-files/${file.id}/file/`);
+      triggerDownload(blob, filename || file.file_name);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not download the file', 'error');
+    }
+  };
+
+  const selectedFile = files.find((file) => file.id === fileId);
   const filtered = leads.filter((l) => {
     const q = search.toLowerCase();
     const extra = Object.values(l.extra_data || {}).join(' ').toLowerCase();
-    const matchesSearch = l.name.toLowerCase().includes(q) || (l.company || '').toLowerCase().includes(q) || (l.phone || '').includes(q) || extra.includes(q);
-    if (activeTab === 'all') return matchesSearch;
+    const matchesSearch = l.name.toLowerCase().includes(q) || (l.company || '').toLowerCase().includes(q) || (l.phone || '').includes(q) || extra.includes(q) || (l.disposition_code || '').toLowerCase().includes(q) || (l.disposition_label || '').toLowerCase().includes(q);
+    if (fileId || activeTab === 'all') return matchesSearch;
     return matchesSearch && leadStage(l).toLowerCase() === activeTab;
   });
 
@@ -101,6 +183,48 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
         </div>
       </div>
 
+      {manage && (
+        <div className="bg-white border-b border-[#E2E8F0] px-6 py-3 shrink-0">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Uploaded files · click one to open its leads</p>
+            {fileId && (
+              <button type="button" onClick={() => setFileId('')} className="text-xs font-medium text-[#4F46E5]">Show all leads</button>
+            )}
+          </div>
+          {files.length === 0 ? (
+            <p className="text-xs text-slate-400">No uploaded files yet.</p>
+          ) : (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {files.map((file) => (
+                <div key={file.id} className={`min-w-[240px] rounded-xl border px-3 py-2 ${fileId === file.id ? 'border-[#4F46E5] bg-indigo-50/40' : 'border-[#E2E8F0] bg-[#F8FAFC]'}`}>
+                  <button type="button" onClick={() => setFileId(file.id)} className="text-left w-full">
+                    <p className="text-sm font-medium text-slate-800 truncate">{file.file_name || 'Upload'}</p>
+                    <p className="text-[11px] text-slate-500 truncate">{file.campaign_name || 'No campaign'} · {file.imported_rows} leads · {file.dial_threads} threads</p>
+                  </button>
+                  <div className="flex items-center gap-2 mt-2">
+                    <Badge variant={file.active ? 'success' : 'danger'}>{file.active ? 'Active' : 'Off'}</Badge>
+                    {file.has_file && (
+                      <button type="button" onClick={() => downloadFile(file)} className="text-[11px] font-medium text-[#4F46E5]">Download</button>
+                    )}
+                    <button type="button" onClick={() => toggleFile(file)} className="text-[11px] font-medium text-slate-600 ml-auto">
+                      {file.active ? 'Deactivate' : 'Activate'}
+                    </button>
+                    <button type="button" onClick={() => deleteFileLeads(file)} className="text-[11px] font-medium text-red-600">Delete</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {selectedFile && (
+        <div className="bg-indigo-50 border-b border-indigo-100 px-6 py-2 text-sm text-indigo-900 shrink-0">
+          <span className="font-semibold">{selectedFile.file_name}</span>
+          <span className="text-indigo-700"> · {filtered.length} leads · status and disposition code</span>
+        </div>
+      )}
+
       <div className="flex-1 overflow-hidden flex flex-col">
         {view === 'table' ? (
           <div className="flex-1 overflow-auto">
@@ -109,8 +233,11 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Lead</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Status</th>
+                  <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Disposition</th>
+                  <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Code</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Score</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Stage</th>
+                  <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Auto</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Campaign</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Owner</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Last Contact</th>
@@ -123,7 +250,7 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                   const stage = leadStage(lead);
                   const owner = lead.owner_name || 'Unassigned';
                   return (
-                    <tr key={lead.id} className="hover:bg-slate-50 transition-colors group">
+                    <tr key={lead.id} className={`hover:bg-slate-50 transition-colors group ${lead.status === 'Inactive' ? 'opacity-60' : ''}`}>
                       <td className="px-4 py-3.5">
                         <div className="flex items-center gap-3">
                           <Avatar initials={lead.name.split(' ').map((w) => w[0]).join('')} size="sm" />
@@ -134,11 +261,16 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                         </div>
                       </td>
                       <td className="px-3 py-3.5"><Badge variant={statusVariant(lead.lead_status || lead.status)}>{leadLabel(lead)}</Badge></td>
+                      <td className="px-3 py-3.5 text-sm text-slate-700">{lead.disposition_label || 'Not Dialed'}</td>
+                      <td className="px-3 py-3.5"><span className="font-mono text-xs text-slate-800">{lead.disposition_code || 'NOT_DIALED'}</span></td>
                       <td className="px-3 py-3.5"><ScoreRing score={lead.lead_score} /></td>
                       <td className="px-3 py-3.5">
                         <span className={`text-xs font-medium px-2 py-1 rounded-full border ${stageColors[stage] || 'bg-slate-50 border-slate-100'}`}>
                           {stage}
                         </span>
+                      </td>
+                      <td className="px-3 py-3.5">
+                        <Badge variant={lead.status === 'Inactive' ? 'danger' : 'success'}>{lead.status === 'Inactive' ? 'Off' : 'Active'}</Badge>
                       </td>
                       <td className="px-3 py-3.5 text-xs text-slate-500">{lead.campaign_name || '—'}</td>
                       <td className="px-3 py-3.5">
@@ -150,11 +282,20 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                       <td className="px-3 py-3.5 text-xs text-slate-500">{fmtDate(lead.last_contact_at)}</td>
                       <td className="px-3 py-3.5 text-xs text-slate-500">{fmtDate(lead.next_callback_at)}</td>
                       <td className="px-3 py-3.5">
-                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center justify-end gap-1">
                           <button onClick={() => callLead(lead)} className="w-7 h-7 flex items-center justify-center rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Call">
                             📞
                           </button>
-                          <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-400 transition-colors" title="Edit">✏</button>
+                          {manage && (
+                            <button onClick={() => toggleLead(lead)} className="h-7 px-2 rounded-lg text-[11px] font-medium text-slate-600 hover:bg-slate-100" title={lead.status === 'Inactive' ? 'Activate' : 'Deactivate'}>
+                              {lead.status === 'Inactive' ? 'On' : 'Off'}
+                            </button>
+                          )}
+                          {manage && (
+                            <button onClick={() => deleteLead(lead)} className="h-7 px-2 rounded-lg text-[11px] font-medium text-red-600 hover:bg-red-50" title="Delete lead">
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -162,6 +303,9 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                 })}
               </tbody>
             </table>
+            {filtered.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-16">No leads to show.</p>
+            )}
           </div>
         ) : (
           <div className="flex-1 overflow-x-auto p-4">
@@ -189,8 +333,17 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                           </div>
                           <div className="flex items-center justify-between">
                             <Badge variant={statusVariant(lead.lead_status || lead.status)}>{leadLabel(lead)}</Badge>
-                            <button onClick={() => callLead(lead)} className="text-green-500 hover:text-green-700 text-xs font-medium transition-colors">📞 Call</button>
+                            <span className="flex items-center gap-2">
+                              {manage && (
+                                <button onClick={() => toggleLead(lead)} className="text-slate-500 hover:text-slate-800 text-xs font-medium">{lead.status === 'Inactive' ? 'Turn on' : 'Turn off'}</button>
+                              )}
+                              {manage && (
+                                <button onClick={() => deleteLead(lead)} className="text-red-500 hover:text-red-700 text-xs font-medium">Delete</button>
+                              )}
+                              <button onClick={() => callLead(lead)} className="text-green-500 hover:text-green-700 text-xs font-medium transition-colors">📞 Call</button>
+                            </span>
                           </div>
+                          <p className="text-[10px] text-slate-500 mt-2">{lead.disposition_code || 'NOT_DIALED'} · {lead.disposition_label || 'Not dialed'}</p>
                           {lead.next_callback_at && (
                             <p className="text-[10px] text-slate-400 mt-2">Follow-up: {fmtDate(lead.next_callback_at)}</p>
                           )}

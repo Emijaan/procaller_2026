@@ -55,6 +55,9 @@ class Call(models.Model):
         NOT_REACHABLE = "Not Reachable", "Not Reachable"
         OUT_OF_SERVICE = "Out of Service Area", "Out of Service Area"
         INCOMING_NOT_ALLOWED = "Incoming Calls Not Allowed", "Incoming Calls Not Allowed"
+        INVALID_NUMBER = "Invalid Number", "Invalid Number"
+        TEMPORARILY_UNAVAILABLE = "Temporarily Unavailable", "Temporarily Unavailable"
+        NETWORK_CONGESTION = "Network Congestion", "Network Congestion"
 
     agent = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="calls")
     contact = models.ForeignKey("crm.Contact", null=True, blank=True, on_delete=models.SET_NULL, related_name="calls")

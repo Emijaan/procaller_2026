@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, Button, Badge, Avatar, ScoreRing, Modal } from '../ui/index';
 import { api, apiUpload } from '../../api/client';
 import type { CallRecord, Campaign, Contact, TelephonySession } from '../../api/types';
+import { can } from '../../api/access';
 import { useAuth } from '../../context/AuthContext';
 import { useAgentSocket } from '../../hooks/useAgentSocket';
-import { answerIncoming, declineIncoming, onIncomingCall, onIncomingEnded, onPhoneHangup, useWebPhone } from '../../hooks/useWebPhone';
+import { answerIncoming, declineIncoming, onIncomingAnswered, onIncomingCall, onIncomingEnded, onPhoneHangup, useWebPhone } from '../../hooks/useWebPhone';
 
 type CallState = 'idle' | 'incoming' | 'initiating' | 'ringing' | 'connected' | 'on_hold' | 'ended';
 type DialerMode = 'manual' | 'preview' | 'break' | 'progressive';
@@ -30,6 +31,67 @@ function readLastDial() {
 function clampRatio(value: number) {
   const n = Math.round(Number(value) || 1);
   return Math.min(32, Math.max(1, n));
+}
+
+function fieldLabel(key: string) {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function LeadSheet({ contact }: { contact: Contact }) {
+  const extra = Object.entries(contact.extra_data || {}).filter(([, value]) => String(value ?? '').trim() !== '');
+  const ready = Boolean(contact.id || contact.phone);
+  if (!ready) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-sm font-semibold text-slate-700">Waiting for a lead</p>
+        <p className="text-xs text-slate-400 mt-1">The next number’s details will show here.</p>
+      </div>
+    );
+  }
+  const initials = (contact.name || '').split(' ').filter(Boolean).map((word) => word[0]).join('').slice(0, 2).toUpperCase() || 'PC';
+  const facts = [
+    ['Phone', contact.phone],
+    ['Company', contact.company],
+    ['Email', contact.email],
+    ['Status', (contact.lead_status || contact.status || '').replace(/_/g, ' ')],
+    ['Last disposition', contact.last_disposition],
+    ['Follow-up', contact.next_callback_at ? contact.next_callback_at.replace('T', ' ').slice(0, 16) : ''],
+    ['Attempts', contact.call_count ? String(contact.call_count) : ''],
+  ].filter(([, value]) => String(value || '').trim());
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-5">
+        <Avatar initials={initials} size="lg" />
+        <div>
+          <p className="text-xl font-semibold text-slate-900">{contact.name || 'Lead'}</p>
+          <p className="text-sm font-mono text-slate-500">{contact.phone || '—'}</p>
+        </div>
+        <div className="ml-auto"><ScoreRing score={contact.lead_score || 0} /></div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3">
+        {facts.map(([label, value]) => (
+          <div key={label} className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wide text-slate-400">{label}</p>
+            <p className="text-sm text-slate-800 break-words">{value}</p>
+          </div>
+        ))}
+        {extra.map(([key, value]) => (
+          <div key={key} className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wide text-slate-400">{fieldLabel(key)}</p>
+            <p className="text-sm text-slate-800 break-words">{String(value)}</p>
+          </div>
+        ))}
+      </div>
+      {!!contact.tags?.length && (
+        <div className="flex flex-wrap gap-1.5 mt-4">
+          {contact.tags.map((tag) => <Badge key={tag} variant="default">{tag}</Badge>)}
+        </div>
+      )}
+      {contact.comments && (
+        <p className="text-sm text-slate-600 mt-4 pt-3 border-t border-[#E2E8F0]">{contact.comments}</p>
+      )}
+    </div>
+  );
 }
 
 function formatHms(total: number) {
@@ -115,6 +177,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const [wrapLeft, setWrapLeft] = useState(0);
   const [dialNumber, setDialNumber] = useState('');
   const [callState, setCallState] = useState<CallState>('idle');
+  const [answered, setAnswered] = useState(false);
+  const answeredRef = useRef(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignId, setCampaignId] = useState<number | ''>('');
@@ -130,6 +194,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const [followUpDate, setFollowUpDate] = useState('');
   const [followUpTime, setFollowUpTime] = useState('');
   const [showKeypad, setShowKeypad] = useState(false);
+  const [dialpadOpen, setDialpadOpen] = useState(false);
   const [dtmf, setDtmf] = useState('');
   const [phoneReady, setPhoneReady] = useState(false);
   const [phoneMode, setPhoneMode] = useState('connecting');
@@ -156,6 +221,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   useEffect(() => onIncomingCall((from) => {
     const phoneNumber = from.replace(/^\+91/, '').replace(/\D/g, '').slice(-10) || from;
     incomingRef.current = true;
+    answeredRef.current = false;
+    setAnswered(false);
     setDialNumber(phoneNumber);
     setCallState('incoming');
     setCurrentContact({ ...emptyContact(), name: 'Incoming call', phone: phoneNumber });
@@ -172,6 +239,12 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const incomingRef = useRef(false);
   const inboundLiveRef = useRef(false);
   const endCallRef = useRef<() => void>(() => undefined);
+  useEffect(() => onIncomingAnswered(() => {
+    answeredRef.current = true;
+    setAnswered(true);
+    setCallState('connected');
+  }), []);
+
   useEffect(() => onPhoneHangup(() => {
     if (endingRef.current) return;
     endCallRef.current();
@@ -298,6 +371,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       setTodayTimes((prev) => ({ ...prev, ...data }));
       setMode(next);
       modeRef.current = next;
+      setDialpadOpen(next !== 'preview');
       noLeads.current = false;
       previewTries.current = 0;
       if (next === 'break' || next === 'manual') {
@@ -351,14 +425,19 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     setActiveCall(call);
     callIdRef.current = call.id;
     setCurrentContact(contactFromCall(call));
+    if ((call.state === 'connected' || call.state === 'on_hold') && !(incomingRef.current && !answeredRef.current)) {
+      answeredRef.current = true;
+      setAnswered(true);
+    }
     if (call.state === 'initiating' || call.state === 'ringing' || call.state === 'connected' || call.state === 'on_hold' || call.state === 'ended') {
       setCallState((current) => {
-        if (current === 'incoming') return current;
-        if (inboundLiveRef.current && (call.state === 'initiating' || call.state === 'ringing')) return current;
+        if (current === 'incoming' && !answeredRef.current) return current;
+        if (answeredRef.current && (call.state === 'initiating' || call.state === 'ringing')) return 'connected';
+        if ((current === 'ringing' || current === 'initiating') && (call.state === 'connected' || call.state === 'on_hold')) return 'connected';
         return call.state;
       });
     }
-    if (call.state === 'connected' || call.state === 'on_hold') {
+    if (answeredRef.current && (call.state === 'connected' || call.state === 'on_hold')) {
       phone.stopRingtone();
       phone.includeAgentInRecording();
     }
@@ -389,9 +468,16 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       if (sessionRef.current?.mode !== 'asterisk' && dialRatioRef.current <= 1) phone.playRingtone();
     }
     if (payload?.type === 'call.answered' && call) {
+      if (!(incomingRef.current && !answeredRef.current)) {
+        answeredRef.current = true;
+        setAnswered(true);
+        setCallState('connected');
+      }
       applyCall(call);
-      phone.stopRingtone();
-      phone.includeAgentInRecording();
+      if (answeredRef.current) {
+        phone.stopRingtone();
+        phone.includeAgentInRecording();
+      }
       if (sessionRef.current?.mode !== 'asterisk') {
         const ice = sessionRef.current?.ice_servers || [{ urls: 'stun:stun.l.google.com:19302' }];
         phone.startLoopback(ice).catch(() => undefined);
@@ -488,6 +574,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     }
     if (mode === 'manual') setDialNumber(number);
     localStorage.setItem(LAST_DIAL_KEY, number);
+    answeredRef.current = false;
+    setAnswered(false);
     setCallState('initiating');
     endingRef.current = true;
     phone.hangupCall();
@@ -512,12 +600,13 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
         await phone.placeCall(sessionRef.current.sip, dest, {
           extraHeaders: [`X-ProCaller-Call-Id: ${call.id}`],
           onProgress: () => {
+            if (answeredRef.current) return;
             setCallState('ringing');
             api(`/api/calls/${call.id}/ringing/`, { method: 'POST' }).catch(() => undefined);
           },
           onAccept: () => {
+            if (answeredRef.current) return;
             setCallState('ringing');
-            api(`/api/calls/${call.id}/ringing/`, { method: 'POST' }).catch(() => undefined);
           },
           onHangup: () => {
             if (endingRef.current) return;
@@ -545,7 +634,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   };
 
   const startPreviewBatch = async () => {
-    const ratio = clampRatio(dialRatioRef.current);
+    const campaignThreads = clampRatio(campaigns.find((camp) => camp.id === campaignId)?.dial_ratio || 1);
+    const ratio = can(user, 'edit_campaign') ? clampRatio(dialRatioRef.current) : campaignThreads;
     if (ratio <= 1) {
       const lead = await loadNextLead();
       if (lead?.phone && modeRef.current === 'preview') {
@@ -631,6 +721,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const answerCallback = async () => {
     incomingRef.current = false;
     inboundLiveRef.current = true;
+    answeredRef.current = true;
+    setAnswered(true);
     phone.stopRingtone();
     setCallState('connected');
     try {
@@ -638,6 +730,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
       setCallState('connected');
     } catch {
       inboundLiveRef.current = false;
+      answeredRef.current = false;
+      setAnswered(false);
       setCallState('idle');
       showToast('Could not answer the call', 'error');
     }
@@ -646,6 +740,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   const declineCallback = () => {
     incomingRef.current = false;
     inboundLiveRef.current = false;
+    answeredRef.current = false;
+    setAnswered(false);
     phone.stopRingtone();
     declineIncoming();
     setCallState('idle');
@@ -654,6 +750,8 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
 
   const endCall = async () => {
     inboundLiveRef.current = false;
+    answeredRef.current = false;
+    setAnswered(false);
     const ids = Array.from(new Set([callIdRef.current, ...liveCallsRef.current.map((row) => row.id)].filter(Boolean))) as number[];
     endingRef.current = true;
     phone.stopRingtone();
@@ -833,6 +931,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   }, [callState, dialNumber, mode, phoneReady]);
 
   const keypadKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '*', '0', '#'];
+  const onCall = answered || callState === 'connected' || callState === 'on_hold';
   const displayName = currentContact.name || activeCall?.customer || 'Unknown';
   const displayPhone = currentContact.phone || activeCall?.phone_number || dialNumber;
   const initials = currentContact.name.split(' ').filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || 'PC';
@@ -870,7 +969,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             Campaign auto · {campaigns.find((camp) => camp.id === campaignId)?.dial_ratio || 1} threads · waiting for an answered call
           </span>
         )}
-        {mode === 'preview' && !campaigns.find((camp) => camp.id === campaignId)?.auto_running && (
+        {mode === 'preview' && !campaigns.find((camp) => camp.id === campaignId)?.auto_running && can(user, 'edit_campaign') && (
           <label className="flex items-center gap-2 text-sm text-slate-500">
             <span>Ratio</span>
             <input
@@ -883,6 +982,11 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             />
             <span className="text-[10px] text-slate-400">1–32 lines</span>
           </label>
+        )}
+        {mode === 'preview' && !campaigns.find((camp) => camp.id === campaignId)?.auto_running && !can(user, 'edit_campaign') && (
+          <span className="text-xs font-medium text-slate-500">
+            {campaigns.find((camp) => camp.id === campaignId)?.dial_ratio || 1} threads
+          </span>
         )}
         <div className="ml-auto flex items-center gap-3">
           <span className={`text-[10px] font-semibold uppercase tracking-wide ${mode === 'preview' ? 'text-indigo-600' : mode === 'break' ? 'text-orange-600' : 'text-slate-500'}`}>
@@ -983,7 +1087,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col items-center justify-center bg-[#F8FAFC] p-8">
+        <div className={`flex-1 flex flex-col items-center bg-[#F8FAFC] p-8 ${mode === 'preview' ? 'overflow-y-auto justify-start' : 'justify-center'}`}>
           {callState === 'idle' && mode === 'break' && (
             <div className="w-full max-w-sm text-center">
               <Card className="p-8">
@@ -1002,7 +1106,30 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             </div>
           )}
           {callState === 'idle' && mode !== 'break' && (
-            <div className="w-full max-w-sm">
+            <div className={mode === 'preview' && !dialpadOpen ? 'w-full max-w-2xl' : 'w-full max-w-sm'}>
+              {mode === 'preview' && (
+                <div className="flex justify-end mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setDialpadOpen((open) => !open)}
+                    className="h-8 px-3 rounded-lg border border-[#E2E8F0] bg-white text-xs font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    {dialpadOpen ? 'Hide dialpad' : 'Dialpad'}
+                  </button>
+                </div>
+              )}
+              {mode === 'preview' && !dialpadOpen ? (
+                <Card className="p-6 max-h-[72vh] overflow-y-auto">
+                  <LeadSheet contact={currentContact} />
+                  <button
+                    type="button"
+                    onClick={() => { loadNextLead(); }}
+                    className="mt-5 h-10 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium text-sm"
+                  >
+                    Skip →
+                  </button>
+                </Card>
+              ) : (
               <Card className="p-6">
                 <h3 className="text-sm font-semibold text-slate-700 mb-4 text-center">
                   {mode === 'manual' ? 'Enter Number' : 'Preview Auto'}
@@ -1070,10 +1197,19 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
                   </p>
                 )}
               </Card>
+              )}
             </div>
           )}
 
-          {callState === 'incoming' && (
+          {mode === 'preview' && callState !== 'idle' && callState !== 'ended' && !wrapHold && (
+            <div className="w-full max-w-2xl mb-6">
+              <Card className="p-5 max-h-[42vh] overflow-y-auto">
+                <LeadSheet contact={currentContact} />
+              </Card>
+            </div>
+          )}
+
+          {!onCall && callState === 'incoming' && (
             <div className="text-center">
               <div className="relative w-28 h-28 mx-auto mb-6">
                 <div className="absolute inset-0 rounded-full bg-green-500/10 animate-ping" />
@@ -1106,7 +1242,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             </div>
           )}
 
-          {(callState === 'initiating' || callState === 'ringing') && (
+          {!onCall && (callState === 'initiating' || callState === 'ringing') && (
             <div className="text-center">
               <div className="relative w-28 h-28 mx-auto mb-6">
                 <div className="absolute inset-0 rounded-full bg-[#4F46E5]/10 animate-ping" />
@@ -1138,7 +1274,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             </div>
           )}
 
-          {(callState === 'connected' || callState === 'on_hold') && (
+          {onCall && (
             <div className="w-full max-w-sm text-center">
               <div className="w-24 h-24 rounded-full bg-green-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-green-200">
                 <Avatar initials={initials} size="lg" />
@@ -1196,7 +1332,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
           <div className="p-4">
             <h4 className="text-xs font-semibold text-slate-500 mb-3">Live Call</h4>
             <div className="space-y-2 text-xs text-slate-600">
-              <p>State: <span className="font-medium text-slate-800">{callState}</span></p>
+              <p>State: <span className="font-medium text-slate-800">{onCall ? 'connected' : callState}</span></p>
               <p>Backend: <span className="font-medium text-slate-800">{phoneMode}</span></p>
               <p>Agent: <span className="font-medium text-slate-800">{user?.display_name}</span></p>
             </div>

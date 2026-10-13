@@ -23,6 +23,7 @@ let stopTimer: ReturnType<typeof setTimeout> | null = null;
 const incomingHandlers = new Set<(from: string) => void>();
 const incomingEndedHandlers = new Set<() => void>();
 const phoneHangupHandlers = new Set<() => void>();
+const incomingAnsweredHandlers = new Set<() => void>();
 let pendingIncoming: Invitation | null = null;
 let ringCtx: AudioContext | null = null;
 let ringLoop: ReturnType<typeof setInterval> | null = null;
@@ -118,6 +119,11 @@ export function onIncomingEnded(handler: () => void) {
 export function onPhoneHangup(handler: () => void) {
   phoneHangupHandlers.add(handler);
   return () => phoneHangupHandlers.delete(handler);
+}
+
+export function onIncomingAnswered(handler: () => void) {
+  incomingAnsweredHandlers.add(handler);
+  return () => incomingAnsweredHandlers.delete(handler);
 }
 
 type HoldMix = {
@@ -339,6 +345,9 @@ export async function answerIncoming() {
     if (state === SessionState.Establishing || state === SessionState.Established) {
       attachRemote(invitation);
       includeAgentInRecording();
+    }
+    if (state === SessionState.Established) {
+      incomingAnsweredHandlers.forEach((handler) => handler());
     }
     if (state === SessionState.Terminated) {
       if (shared?.conference === invitation) shared.conference = null;

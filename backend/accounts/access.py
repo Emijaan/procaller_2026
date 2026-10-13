@@ -159,25 +159,8 @@ def scoped_leads(user, qs):
         return qs.filter(owner=user)
     qs = qs.filter(agency=org)
     role = role_of(user)
-    if role == User.Role.AGENCY:
+    if role in {User.Role.AGENCY, User.Role.MANAGER, User.Role.ADMIN, User.Role.SUPERVISOR}:
         return qs
-    if role == User.Role.MANAGER:
-        tree = descendant_ids(user)
-        return qs.filter(
-            Q(owner_id__in=tree)
-            | Q(assigned_admin_id__in=tree)
-            | Q(owner=user)
-            | Q(campaign__manager=user)
-            | Q(campaign__admin_id__in=tree)
-        )
-    if role == User.Role.ADMIN:
-        return qs.filter(
-            Q(assigned_admin=user)
-            | Q(owner=user)
-            | Q(owner__reports_to=user)
-            | Q(campaign__admin=user)
-            | Q(campaign__assigned_users=user)
-        ).distinct()
     return qs.filter(Q(owner=user) | Q(campaign__assigned_users=user)).distinct()
 
 

@@ -293,7 +293,7 @@ class IbrPiperTests(TestCase):
             "Cause-txt": "Subscriber switched off",
         })
         asha_call.refresh_from_db()
-        self.assertEqual(asha_call.disposition, "Switch Off")
+        self.assertEqual(asha_call.disposition, "SWITCHED_OFF")
         ravi_call = Call.objects.create(
             agent=self.agency, contact=ravi, campaign=camp, phone_number=ravi.phone, callerid_token="ibr-ravi", state=Call.State.RINGING
         )
@@ -311,7 +311,7 @@ class IbrPiperTests(TestCase):
             "Cause-txt": "Normal Clearing",
         })
         ravi_call.refresh_from_db()
-        self.assertEqual(ravi_call.disposition, "Connected")
+        self.assertEqual(ravi_call.disposition, "CONNECTED")
         self.assertIsNotNone(ravi_call.answered_at)
         missed = Contact.objects.create(
             name="Una", phone="9811111113", agency=self.org, campaign=camp, extra_data={"customer_name": "Una"}, tts_status="pending"
@@ -330,12 +330,13 @@ class IbrPiperTests(TestCase):
         self.assertEqual(report.status_code, 200)
         rows = list(csv.DictReader(StringIO(report.content.decode())))
         by_phone = {row["phone"]: row for row in rows}
-        self.assertEqual(by_phone["9811111111"]["disposition"], "Switch Off")
+        self.assertEqual(by_phone["9811111111"]["disposition"], "SWITCHED_OFF")
+        self.assertEqual(by_phone["9811111111"]["announcement"], "The number you are calling is switched off.")
         self.assertEqual(by_phone["9811111111"]["customer_name"], "Asha")
         self.assertEqual(by_phone["9811111111"]["loan_amount"], "1500")
-        self.assertEqual(by_phone["9811111112"]["disposition"], "Connected")
-        self.assertEqual(by_phone["9811111113"]["disposition"], "Unknown")
-        self.assertEqual(by_phone["9811111113"]["outcome"], "Unknown")
+        self.assertEqual(by_phone["9811111112"]["disposition"], "CONNECTED")
+        self.assertEqual(by_phone["9811111113"]["disposition"], "UNKNOWN_UNCLASSIFIED")
+        self.assertEqual(by_phone["9811111113"]["outcome"], "UNKNOWN_UNCLASSIFIED")
         other = self._login("other@ibr.test")
         self.assertEqual(other.get(f"/api/reports/export/?kind=ibr&file=csv&campaign={camp.id}").status_code, 404)
         user = self._login("user@ibr.test")
@@ -398,3 +399,33 @@ class IbrPiperTests(TestCase):
         self.assertEqual(Call.objects.filter(campaign=quiet).count(), 1)
         self.assertNotEqual(placed[0].contact_id, waiting.id)
         self.assertEqual(Contact.objects.get(pk=second.id).lead_status, Contact.LeadStatus.NEW)
+
+
+class CustomerAnswerTests(TestCase):
+    def test_only_the_gsm_answer_connects_the_call(self):
+        from telephony.ami import _handle_event
+
+        org = Organization.objects.create(name="Answer Org")
+        agent = User.objects.create_user(
+            email="agent@answer.test", password="x", role=User.Role.USER, organization=org, extension="2100", sip_username="2100",
+        )
+        call = Call.objects.create(
+            agent=agent, phone_number="7827847488", callerid_token="answer-1", state=Call.State.RINGING,
+        )
+        _handle_event({
+            "Event": "Newstate",
+            "Channel": "PJSIP/2100-0000001e",
+            "ChannelStateDesc": "Up",
+        })
+        call.refresh_from_db()
+        self.assertEqual(call.state, Call.State.RINGING)
+        self.assertIsNone(call.answered_at)
+        _handle_event({
+            "Event": "DialEnd",
+            "Channel": "PJSIP/2100-0000001e",
+            "DestChannel": "PJSIP/gsm222-0000001f",
+            "DialStatus": "ANSWER",
+        })
+        call.refresh_from_db()
+        self.assertEqual(call.state, Call.State.CONNECTED)
+        self.assertIsNotNone(call.answered_at)

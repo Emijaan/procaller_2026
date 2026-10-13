@@ -1,0 +1,146 @@
+from io import BytesIO
+
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
+from openpyxl import Workbook
+from rest_framework.test import APIClient
+
+from accounts.models import Organization, User
+from campaigns.models import Campaign
+from crm.models import Contact, ImportJob
+
+
+def _workbook(rows):
+    book = Workbook()
+    sheet = book.active
+    for row in rows:
+        sheet.append(row)
+    buf = BytesIO()
+    book.save(buf)
+    return buf.getvalue()
+
+
+@override_settings(TELEPHONY_BACKEND="sandbox")
+class LeadFileVisibilityTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(name="Agency A", max_managers=5, max_admins=5, max_users=10)
+        self.other = Organization.objects.create(name="Agency B", max_managers=5, max_admins=5, max_users=10)
+        self.root = User.objects.create_user(email="root@a.com", password="x", role=User.Role.SUPER_ADMIN, is_superuser=True)
+        self.agency = User.objects.create_user(email="agency@a.com", password="x", role=User.Role.AGENCY, organization=self.org)
+        self.manager = User.objects.create_user(
+            email="manager@a.com", password="x", role=User.Role.MANAGER, organization=self.org, reports_to=self.agency
+        )
+        self.admin = User.objects.create_user(
+            email="admin@a.com", password="x", role=User.Role.ADMIN, organization=self.org, reports_to=self.manager
+        )
+        self.agent = User.objects.create_user(
+            email="user@a.com", password="x", role=User.Role.USER, organization=self.org, reports_to=self.admin
+        )
+        self.agency_b = User.objects.create_user(
+            email="agency@b.com", password="x", role=User.Role.AGENCY, organization=self.other
+        )
+        self.camp = Campaign.objects.create(
+            name="File Camp", agency=self.org, created_by=self.agency, status=Campaign.Status.ACTIVE, active=True
+        )
+        self.camp.assigned_users.add(self.agent)
+        self.camp_b = Campaign.objects.create(
+            name="Other Camp", agency=self.other, created_by=self.agency_b, status=Campaign.Status.ACTIVE, active=True
+        )
+
+    def _login(self, email):
+        client = APIClient()
+        res = client.post("/api/auth/login/", {"email": email, "password": "x"}, format="json")
+        self.assertEqual(res.status_code, 200, res.data)
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {res.data['access']}")
+        return client
+
+    def _upload(self):
+        agency = self._login("agency@a.com")
+        payload = _workbook([["Mobile", "Name", "City"], ["9000000001", "Ravi", "Delhi"], ["9000000002", "Asha", "Pune"]])
+        upload = SimpleUploadedFile(
+            "leads.xlsx", payload, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        preview = agency.post(f"/api/campaigns/{self.camp.id}/import/preview/", {"file": upload}, format="multipart")
+        self.assertEqual(preview.status_code, 200, preview.data)
+        confirmed = agency.post(
+            f"/api/campaigns/{self.camp.id}/import/",
+            {
+                "file": SimpleUploadedFile("leads.xlsx", payload, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                "job_id": preview.data["job_id"],
+                "dial_threads": "2",
+            },
+            format="multipart",
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.data)
+        return preview.data["job_id"]
+
+    def test_managers_see_every_agency_lead_and_can_stop_the_file(self):
+        job_id = self._upload()
+        job = ImportJob.objects.get(pk=job_id)
+        self.assertTrue(job.source_file)
+        self.assertEqual(Contact.objects.filter(import_job=job).count(), 2)
+
+        for email in ("root@a.com", "agency@a.com", "manager@a.com", "admin@a.com"):
+            client = self._login(email)
+            phones = {row["phone"] for row in client.get("/api/leads/").data}
+            self.assertEqual(phones, {"9000000001", "9000000002"}, email)
+            files = client.get("/api/lead-files/")
+            self.assertEqual(files.status_code, 200, files.data)
+            self.assertEqual(files.data[0]["id"], job_id)
+            self.assertTrue(files.data[0]["has_file"])
+            self.assertEqual(files.data[0]["file_name"], "leads.xlsx")
+
+        outsider = self._login("agency@b.com")
+        self.assertEqual(outsider.get("/api/leads/").data, [])
+        self.assertEqual(outsider.get("/api/lead-files/").data, [])
+        self.assertEqual(outsider.get(f"/api/lead-files/{job_id}/file/").status_code, 404)
+
+        user = self._login("user@a.com")
+        self.assertEqual(user.get("/api/lead-files/").status_code, 403)
+        blocked = user.patch(f"/api/leads/{Contact.objects.filter(import_job=job).first().id}/", {"status": "Inactive"}, format="json")
+        self.assertEqual(blocked.status_code, 403)
+
+        downloaded = self._login("manager@a.com").get(f"/api/lead-files/{job_id}/file/")
+        self.assertEqual(downloaded.status_code, 200)
+        body = b"".join(downloaded.streaming_content)
+        self.assertTrue(body.startswith(b"PK"))
+
+        stopped = self._login("admin@a.com").patch(f"/api/lead-files/{job_id}/", {"active": False}, format="json")
+        self.assertEqual(stopped.status_code, 200, stopped.data)
+        self.assertFalse(stopped.data["active"])
+        self.assertEqual(Contact.objects.filter(import_job=job, status=Contact.Status.INACTIVE).count(), 2)
+
+        agent = self._login("user@a.com")
+        agent.post("/api/agent/mode/", {"mode": "preview", "campaign_id": self.camp.id}, format="json")
+        missed = agent.post("/api/leads/reserve/", {"campaign": self.camp.id}, format="json")
+        self.assertEqual(missed.status_code, 404)
+
+        started = self._login("manager@a.com").patch(f"/api/lead-files/{job_id}/", {"active": True}, format="json")
+        self.assertTrue(started.data["active"])
+        one = Contact.objects.filter(import_job=job).order_by("id").first()
+        held = self._login("agency@a.com").patch(f"/api/leads/{one.id}/", {"status": "Inactive"}, format="json")
+        self.assertEqual(held.status_code, 200)
+        one.refresh_from_db()
+        self.assertEqual(one.status, Contact.Status.INACTIVE)
+        agent.post("/api/agent/mode/", {"mode": "preview", "campaign_id": self.camp.id}, format="json")
+        reserved = agent.post("/api/leads/reserve/", {"campaign": self.camp.id}, format="json")
+        self.assertEqual(reserved.status_code, 200, reserved.data)
+        self.assertNotEqual(reserved.data["id"], one.id)
+
+    def test_a_lead_and_a_whole_file_can_be_deleted(self):
+        job_id = self._upload()
+        leads = list(Contact.objects.filter(import_job_id=job_id).order_by("id"))
+        user = self._login("user@a.com")
+        self.assertEqual(user.delete(f"/api/leads/{leads[0].id}/").status_code, 403)
+        self.assertEqual(user.delete(f"/api/lead-files/{job_id}/").status_code, 403)
+
+        removed = self._login("manager@a.com").delete(f"/api/leads/{leads[0].id}/")
+        self.assertEqual(removed.status_code, 200, removed.data)
+        self.assertFalse(Contact.objects.filter(pk=leads[0].id).exists())
+        self.assertTrue(Contact.objects.filter(pk=leads[1].id).exists())
+
+        wiped = self._login("admin@a.com").delete(f"/api/lead-files/{job_id}/")
+        self.assertEqual(wiped.status_code, 200, wiped.data)
+        self.assertEqual(wiped.data["deleted"], 1)
+        self.assertFalse(Contact.objects.filter(import_job_id=job_id).exists())
+        self.assertTrue(ImportJob.objects.filter(pk=job_id).exists())

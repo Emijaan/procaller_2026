@@ -41,13 +41,13 @@ export default function Login() {
             Your calling floor.<br />Built for agents.
           </h1>
           <p className="text-[#64748B] text-lg leading-relaxed mb-8">
-            Manual WebRTC dialing first. Campaigns, hopper, and predictive dial come next — without locking you to VICIdial.
+            Manual dialing, campaigns, and inbound calls on one agent phone.
           </p>
           <div className="grid grid-cols-2 gap-4">
             {[
               { icon: '📞', label: 'Manual dial', sub: 'click-to-call now' },
               { icon: '🌐', label: 'WebRTC phone', sub: 'in the browser' },
-              { icon: '🗂', label: 'Dispositions', sub: 'saved to Postgres' },
+              { icon: '🗂', label: 'Dispositions', sub: 'saved on every call' },
               { icon: '🔐', label: 'Agent login', sub: 'role-ready' },
             ].map((f) => (
               <div key={f.label} className="flex items-center gap-3 bg-white/5 rounded-xl p-3">

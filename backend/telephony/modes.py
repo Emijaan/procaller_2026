@@ -19,6 +19,18 @@ def clamp_ratio(value, default=1):
         return default
 
 
+def ratio_for_actor(user, campaign, requested, fallback=1):
+    """Thread count belongs to the campaign. A user cannot choose another value."""
+    from accounts.access import has_perm
+
+    locked = clamp_ratio(getattr(campaign, "dial_ratio", None) or fallback, 1)
+    if not has_perm(user, "edit_campaign"):
+        return locked
+    if requested is None or requested == "":
+        return locked
+    return clamp_ratio(requested, locked)
+
+
 def current_mode(user):
     row = AgentModeSession.objects.filter(user=user, ended_at__isnull=True).order_by("-id").first()
     return row.mode if row else AgentModeSession.Mode.OFFLINE
@@ -60,10 +72,7 @@ def set_agent_mode(user, mode, request=None, campaign=None, dial_ratio=None):
     if request:
         ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip() or request.META.get("REMOTE_ADDR")
         ua = (request.META.get("HTTP_USER_AGENT") or "")[:255]
-    ratio = clamp_ratio(
-        dial_ratio,
-        getattr(campaign, "dial_ratio", None) or 1,
-    )
+    ratio = ratio_for_actor(user, campaign, dial_ratio, 1)
     row = AgentModeSession.objects.create(
         user=user, mode=mode, campaign=campaign, ip_address=ip, user_agent=ua, dial_ratio=ratio
     )

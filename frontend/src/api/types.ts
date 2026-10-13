@@ -95,6 +95,10 @@ export interface Contact {
   tts_error?: string;
   next_callback_at?: string | null;
   call_count?: number;
+  import_job?: number | null;
+  import_file_name?: string;
+  disposition_code?: string;
+  disposition_label?: string;
 }
 
 export interface CallRecord {

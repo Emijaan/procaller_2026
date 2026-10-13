@@ -54,6 +54,9 @@ class Contact(models.Model):
     tts_audio = models.FileField(upload_to="tts/%Y/%m/%d/", blank=True, null=True)
     tts_error = models.CharField(max_length=240, blank=True, default="")
     last_contact_at = models.DateTimeField(null=True, blank=True)
+    import_job = models.ForeignKey(
+        "ImportJob", null=True, blank=True, on_delete=models.SET_NULL, related_name="contacts"
+    )
     reserved_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="reserved_leads"
     )
@@ -100,6 +103,8 @@ class ImportJob(models.Model):
     duplicate_rows = models.PositiveIntegerField(default=0)
     imported_rows = models.PositiveIntegerField(default=0)
     dial_threads = models.PositiveSmallIntegerField(default=1)
+    source_file = models.FileField(upload_to="imports/%Y/%m/%d/", blank=True, null=True)
+    active = models.BooleanField(default=True)
     errors = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

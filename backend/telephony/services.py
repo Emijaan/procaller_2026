@@ -247,26 +247,18 @@ def _apply_detected_disposition(call):
         return
     contact = call.contact
     fields = []
-    auto = {
-        "Connected",
-        "Busy",
-        "No Answer",
-        "Failed",
-        "Cancelled",
-        "Unknown",
-        "Switch Off",
-        "Not Reachable",
-        "Out of Service Area",
-        "Incoming Calls Not Allowed",
-    }
-    if not contact.last_disposition or contact.last_disposition in auto:
+    from telephony.causes import BUSY_CODES, NETWORK_DISPOSITIONS, NO_ANSWER_CODES
+
+    if not contact.last_disposition or contact.last_disposition in NETWORK_DISPOSITIONS:
         contact.last_disposition = call.disposition
         fields.append("last_disposition")
     if not call.answered_at and contact.lead_status == Contact.LeadStatus.CALLING:
-        contact.lead_status = {
-            "Busy": Contact.LeadStatus.BUSY,
-            "No Answer": Contact.LeadStatus.NO_ANSWER,
-        }.get(call.disposition, Contact.LeadStatus.NOT_CONNECTED)
+        if call.disposition in BUSY_CODES:
+            contact.lead_status = Contact.LeadStatus.BUSY
+        elif call.disposition in NO_ANSWER_CODES:
+            contact.lead_status = Contact.LeadStatus.NO_ANSWER
+        else:
+            contact.lead_status = Contact.LeadStatus.NOT_CONNECTED
         contact.reserved_by = None
         contact.reserved_until = None
         fields.extend(["lead_status", "reserved_by", "reserved_until"])
@@ -281,11 +273,11 @@ def _refine_ended_call(call, outcome, hangup_cause, disposition, cause_code="", 
     if call.disposition and call.disposition not in NETWORK_DISPOSITIONS:
         _remember_network(call, cause_code, cause_text)
         return call
-    if disposition == "Unknown" and call.disposition:
+    if disposition in {"Unknown", "UNKNOWN_UNCLASSIFIED", "UNKNOWN_ANNOUNCEMENT", "UNKNOWN_ANNOUNCEMENT_HI"} and call.disposition:
         _remember_network(call, cause_code, cause_text)
         return call
-    replace = call.disposition in {"", "Unknown", "Cancelled"} or (
-        disposition in UNREACHED_DISPOSITIONS and call.disposition == "Connected"
+    replace = call.disposition in {"", "Unknown", "UNKNOWN_UNCLASSIFIED", "Cancelled", "CANCELLED"} or (
+        disposition in UNREACHED_DISPOSITIONS and call.disposition in {"Connected", "CONNECTED"}
     )
     if not replace and call.disposition == disposition:
         _remember_network(call, cause_code, cause_text)
@@ -324,7 +316,7 @@ def hangup_call(call, outcome="", cause_code="", cause_text="", dial_status="", 
 
     if detected_disposition in UNREACHED_DISPOSITIONS:
         call.answered_at = None
-    elif detected_disposition == "Connected" and not call.answered_at:
+    elif detected_disposition == "CONNECTED" and not call.answered_at:
         call.answered_at = timezone.now()
     from_network = bool(cause_code or cause_text or dial_status or originate_reason)
     wrap = not _agent_has_other_live(call)
@@ -366,7 +358,7 @@ def hangup_call(call, outcome="", cause_code="", cause_text="", dial_status="", 
 
 def originate_preview_batch(user, campaign=None, ratio=None, session=None):
     from crm.queue import reserve_next_lead
-    from telephony.modes import clamp_ratio, current_mode
+    from telephony.modes import current_mode, ratio_for_actor
     from telephony.models import AgentModeSession as ModeRow
 
     if current_mode(user) != ModeRow.Mode.PREVIEW:
@@ -376,7 +368,12 @@ def originate_preview_batch(user, campaign=None, ratio=None, session=None):
     from accounts.access import assert_can_use_campaign
 
     assert_can_use_campaign(user, campaign)
-    ratio = clamp_ratio(ratio, (live.dial_ratio if live else None) or getattr(campaign, "dial_ratio", 1) or 1)
+    ratio = ratio_for_actor(
+        user,
+        campaign,
+        ratio,
+        (live.dial_ratio if live else None) or getattr(campaign, "dial_ratio", 1) or 1,
+    )
     if live and live.dial_ratio != ratio:
         live.dial_ratio = ratio
         live.save(update_fields=["dial_ratio"])
