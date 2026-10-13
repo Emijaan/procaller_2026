@@ -6,6 +6,8 @@ import uuid
 
 from django.conf import settings
 
+from telephony.pstn import ami_pstn_channel
+
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
@@ -75,7 +77,15 @@ class AmiClient:
         for line in text.split("\r\n"):
             if ":" in line:
                 key, val = line.split(":", 1)
-                msg[key.strip()] = val.strip()
+                key, val = key.strip(), val.strip()
+                if key in msg:
+                    prev = msg[key]
+                    if isinstance(prev, list):
+                        prev.append(val)
+                    else:
+                        msg[key] = [prev, val]
+                else:
+                    msg[key] = val
         return msg
 
     def _listen(self):
@@ -120,12 +130,21 @@ def get_ami():
         return _client
 
 
+def cli_output(command, timeout=8):
+    ami = get_ami()
+    reply = ami.send({"Action": "Command", "Command": command}, timeout=timeout)
+    output = reply.get("Output")
+    if isinstance(output, list):
+        return "\n".join(output)
+    return output or reply.get("Message") or ""
+
+
 def originate_to_conference(number, conference, callerid_token, call_id, timeout=60):
     ami = get_ami()
     reply = ami.send(
         {
             "Action": "Originate",
-            "Channel": f"Local/{number}@procaller-outbound",
+            "Channel": ami_pstn_channel(number),
             "Context": "procaller-agent",
             "Exten": conference,
             "Priority": "1",

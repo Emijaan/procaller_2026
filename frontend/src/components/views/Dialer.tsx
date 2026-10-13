@@ -796,7 +796,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
             Online {formatHms(todayTimes.online)} · Manual {formatHms(todayTimes.manual)} · Preview {formatHms(todayTimes.preview)} · Break {formatHms(todayTimes.break)}
           </span>
           <span className={`text-xs font-medium ${phoneReady ? 'text-green-600' : 'text-amber-600'}`}>
-            {phoneReady ? `WebRTC ${phoneMode} · ext ${user?.extension || '—'}` : 'Connecting phone...'}
+            {phoneReady ? `WebRTC ${phoneMode} · ext ${sessionRef.current?.sip?.uri?.split(':')[1]?.split('@')[0] || user?.extension || '—'}` : 'Connecting phone...'}
           </span>
         </div>
       </div>

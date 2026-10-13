@@ -3,6 +3,7 @@ backend/.venv/
 backend/db.sqlite3
 backend/media/
 backend/venv/
+venv/
 frontend/node_modules/
 frontend/dist/
 frontend/build/

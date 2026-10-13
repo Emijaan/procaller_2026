@@ -87,6 +87,9 @@ def create_account(actor, *, email, password, role, organization=None, reports_t
     )
     user.set_password(password or User.objects.make_random_password())
     user.save()
+    from telephony.sip_provision import ensure_sip_identity
+
+    ensure_sip_identity(user)
     return user
 
 

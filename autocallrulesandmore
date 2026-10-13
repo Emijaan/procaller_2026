@@ -1,0 +1,2016 @@
+Absolutely. Below is a **complete development prompt** you can give to Cursor/Claude/Gemini or another coding agent to implement this as a production-grade feature.
+
+# DEVELOPMENT PROMPT — PREVIEW AUTO-DIALER & ADVANCED CALL CENTER MODULE
+
+Build a production-ready **Preview Auto-Dialer + Agent Management + Call Reporting + Call Recording + Supervisor Monitoring** module for our existing call-center application.
+
+The system should support **Admin, Agency, Manager and User/Agent roles** with strict role-based access control.
+
+Do NOT create a separate standalone application. Integrate this functionality into the existing project architecture, authentication, users, campaigns, database and UI.
+
+---
+
+# 1. USER ROLES
+
+The system has these roles:
+
+### Admin
+
+Full system access.
+
+Can:
+
+* Create/manage agencies
+* Create/manage managers
+* Create/manage users
+* Create/manage campaigns
+* Upload leads
+* View all users and activities
+* View all calls
+* View all reports
+* Listen/download recordings
+* Barge into calls
+* Whisper to agents
+* Monitor live agents
+* View campaign statistics
+* View complete call disposition/data
+* View uploaded lead processing results
+
+### Agency
+
+Agency can access only its own organization/data.
+
+Can:
+
+* View its managers
+* View its users
+* Create/manage campaigns according to permissions
+* Upload Excel/CSV leads
+* View campaign leads
+* View call reports
+* View user activity
+* View recordings belonging to its organization
+* Monitor calls
+* Barge
+* Whisper
+* View manager/user activity
+* View complete campaign performance
+* Download permitted reports
+
+Agency must NOT be able to access another agency's data.
+
+### Manager
+
+Manager can access users/campaigns assigned to that manager.
+
+Can:
+
+* Upload Excel/CSV leads to permitted campaigns
+* View campaign data
+* Monitor users
+* View user reports
+* View call reports
+* Listen to permitted recordings
+* Barge
+* Whisper
+* View campaign statistics
+* View unanswered-call reasons
+* View IVR results
+
+Manager must NOT be able to access unauthorized agencies/managers/users.
+
+### User / Agent
+
+Agent can:
+
+* Login
+* Select working mode
+* Manual mode
+* Preview Auto mode
+* Break mode
+* Receive calls
+* View assigned lead information
+* Make manual calls
+* See call history permitted to that user
+* View/download their own reports
+* Listen/download their own recordings only
+* See their own daily statistics
+
+Agent must NOT be able to access another agent's recordings, reports or leads unless explicitly assigned.
+
+---
+
+# 2. AGENT WORKING MODES
+
+Every agent must have a current status/mode.
+
+Required modes:
+
+1. MANUAL
+2. PREVIEW / AUTO
+3. BREAK
+4. OFFLINE
+
+The UI should clearly show the current mode.
+
+Example:
+
+```text
+Agent: Rahul
+
+STATUS:
+● PREVIEW AUTO
+
+Today's Time:
+
+Online:       05:42:21
+Manual:       01:20:32
+Preview:      03:41:49
+Break:        00:40:00
+```
+
+---
+
+# 3. MODE TIME TRACKING
+
+Every mode change must be recorded.
+
+Create a mode/activity history table.
+
+Example:
+
+```text
+Agent
+Start Time
+End Time
+Duration
+Mode
+IP
+Device/Session
+```
+
+Example:
+
+```text
+09:30:00 → 10:15:20   PREVIEW
+10:15:20 → 10:30:20   BREAK
+10:30:20 → 12:00:00   MANUAL
+12:00:00 → 13:00:00   PREVIEW
+```
+
+The system must calculate:
+
+* Total online time
+* Total manual time
+* Total preview time
+* Total break time
+* Total offline time
+* Login time
+* Logout time
+* Number of mode changes
+
+The calculations must be based on server-side timestamps.
+
+Do NOT rely only on frontend timers.
+
+---
+
+# 4. CAMPAIGN MANAGEMENT
+
+Admin, Agency and Manager (according to permissions) can create/manage campaigns.
+
+Campaign should contain:
+
+```text
+Campaign Name
+Campaign Code
+Description
+Agency
+Manager
+Status
+Calling Mode
+Created By
+Created Date
+```
+
+Calling modes:
+
+```text
+MANUAL
+PREVIEW_AUTO
+```
+
+A campaign can have many leads.
+
+A lead can contain fields such as:
+
+```text
+Name
+Phone Number
+Alternate Phone
+Address
+City
+State
+Pincode
+Customer ID
+Account Number
+Loan Number
+Amount
+Due Date
+Any Custom Fields
+```
+
+The system must support **dynamic/custom columns** because uploaded Excel/CSV files may contain different fields.
+
+---
+
+# 5. EXCEL / CSV LEAD UPLOAD
+
+Admin, Agency and Manager should be able to upload:
+
+* `.xlsx`
+* `.xls`
+* `.csv`
+
+to an authorized campaign.
+
+Upload process:
+
+```text
+Select Campaign
+       ↓
+Upload Excel/CSV
+       ↓
+Read Headers
+       ↓
+Map Columns
+       ↓
+Validate Data
+       ↓
+Detect Duplicate Numbers
+       ↓
+Import Leads
+       ↓
+Create Lead Queue
+```
+
+Provide a column mapping screen.
+
+Example:
+
+```text
+Excel Column       System Field
+
+Customer Name  →   Name
+Mobile         →   Phone
+Loan No        →   Loan Number
+Amount         →   Amount
+State          →   State
+```
+
+Unknown columns should be stored as custom lead fields instead of being discarded.
+
+---
+
+# 6. UPLOAD VALIDATION
+
+Before importing:
+
+Check:
+
+* Invalid phone numbers
+* Missing phone numbers
+* Duplicate phone numbers
+* Empty rows
+* Invalid data
+* Duplicate leads
+* Unsupported columns
+* Invalid file format
+
+Show an upload summary:
+
+```text
+Total Rows:              10,000
+Imported:                 9,620
+Duplicate:                  250
+Invalid Number:             100
+Empty Rows:                  30
+Other Errors:                0
+```
+
+Allow downloading an error report.
+
+---
+
+# 7. PREVIEW AUTO-DIALER
+
+This is the primary feature.
+
+If a user is logged in and changes their mode to:
+
+```text
+PREVIEW AUTO
+```
+
+the system should automatically start processing leads from campaigns assigned to that user.
+
+Flow:
+
+```text
+Agent enters PREVIEW mode
+        ↓
+Check assigned campaign
+        ↓
+Find next available lead
+        ↓
+Reserve/lock lead
+        ↓
+Display lead information
+        ↓
+Start outbound call
+        ↓
+Wait for call result
+        ↓
+If answered
+        ↓
+Agent handles call
+        ↓
+Call ends
+        ↓
+Save disposition
+        ↓
+Get next lead
+```
+
+IMPORTANT:
+
+The same lead must NEVER be called simultaneously by two agents.
+
+Implement database-level lead locking/reservation.
+
+---
+
+# 8. PREVIEW MODE BEHAVIOR
+
+Preview mode means the system prepares the next lead and automatically initiates the outbound call.
+
+The agent should see:
+
+```text
+CUSTOMER INFORMATION
+
+Name: Rahul Kumar
+Phone: 98XXXXXXXX
+Loan Number: LN12345
+Amount: ₹25,000
+State: Delhi
+
+[ CALLING ]
+
+Call Status:
+Ringing...
+```
+
+When the customer answers:
+
+```text
+CONNECTED
+
+Call Duration: 00:03:21
+```
+
+The complete lead/customer data should remain visible to the agent.
+
+---
+
+# 9. CALL FLOW
+
+The call system should integrate with the existing telephony system, preferably Asterisk/VoIP if already present.
+
+Track:
+
+```text
+Call ID
+Campaign
+Lead
+Agent
+Phone Number
+Start Time
+Answer Time
+End Time
+Duration
+Billable Duration
+Hangup Cause
+Disposition
+Recording
+```
+
+Every call must have a unique identifier.
+
+Example:
+
+```text
+CALL-20260922-00001234
+```
+
+---
+
+# 10. ANSWERED CALLS
+
+When a customer answers:
+
+Automatically associate:
+
+```text
+Lead
+Agent
+Campaign
+Call
+Recording
+```
+
+The agent interface should show:
+
+```text
+Customer Details
+Call Timer
+Call Controls
+Disposition
+Notes
+```
+
+After the call ends, agent should be able to select a disposition.
+
+Example:
+
+```text
+Interested
+Not Interested
+Callback
+Promise To Pay
+Wrong Number
+Already Paid
+No Requirement
+Follow Up
+Other
+```
+
+Allow administrators to configure dispositions.
+
+---
+
+# 11. UNANSWERED CALL REPORTING
+
+This is VERY IMPORTANT.
+
+For every attempted call, record the exact result.
+
+Do not simply classify everything as "Unanswered".
+
+Store detailed telephony result/cause.
+
+Examples:
+
+```text
+ANSWERED
+RINGING_NO_ANSWER
+BUSY
+PHONE_SWITCHED_OFF
+NOT_REACHABLE
+INVALID_NUMBER
+NETWORK_ERROR
+REJECTED
+FAILED
+VOICEMAIL
+IVR
+CONGESTION
+TIMEOUT
+UNKNOWN
+```
+
+The exact available causes should depend on the telephony provider/Asterisk response.
+
+Each attempt must be stored separately.
+
+Example:
+
+```text
+Lead: 9876543210
+
+Attempt #1
+Time: 10:05:21
+Result: NOT_REACHABLE
+
+Attempt #2
+Time: 11:42:12
+Result: RINGING_NO_ANSWER
+
+Attempt #3
+Time: 14:22:50
+Result: ANSWERED
+```
+
+Never overwrite previous attempts.
+
+---
+
+# 12. IVR REPORTING
+
+If the call goes through an IVR, record every meaningful IVR event.
+
+Example:
+
+```text
+Call ID: CALL12345
+
+10:10:01 IVR Started
+10:10:04 Language Selected: Hindi
+10:10:08 Option 1 Pressed
+10:10:12 Customer Connected
+```
+
+Track:
+
+```text
+IVR Started
+IVR Menu
+DTMF Key
+Selected Option
+Transfer
+Queue
+Agent Connection
+IVR Timeout
+IVR Hangup
+```
+
+This information must be visible in reports to authorized Admin/Agency/Manager users.
+
+---
+
+# 13. CALL RECORDINGS
+
+Every recorded call should be associated with:
+
+```text
+Call
+Lead
+Agent
+Campaign
+Agency
+Date
+Duration
+Recording File
+```
+
+Access control is critical.
+
+### Agent
+
+Can only:
+
+* Listen to own recordings
+* Download own recordings
+
+### Manager
+
+Can listen/download recordings for users under their permission scope.
+
+### Agency
+
+Can listen/download recordings belonging to its agency.
+
+### Admin
+
+Can access all recordings.
+
+Do not expose recording URLs directly without authorization.
+
+Use authenticated/authorized download endpoints.
+
+Prefer signed/temporary URLs if recordings are stored remotely.
+
+---
+
+# 14. BARge-IN
+
+Implement supervisor **BARGE** functionality.
+
+Authorized:
+
+* Admin
+* Agency
+* Manager
+
+A supervisor can join an active call.
+
+Example:
+
+```text
+Active Call
+
+Agent: Rahul
+Customer: XXXXXXXX
+Duration: 02:31
+
+[ LISTEN ]
+[ WHISPER ]
+[ BARGE ]
+```
+
+Barge means supervisor joins the conversation and can speak to both sides according to the telephony implementation.
+
+Record supervisor activity:
+
+```text
+Supervisor
+Call ID
+Start Time
+End Time
+Action = BARGE
+```
+
+---
+
+# 15. WHISPER
+
+Implement supervisor whisper functionality.
+
+Whisper means supervisor can speak to the agent without the customer hearing the supervisor.
+
+Example:
+
+```text
+Agent is speaking with customer
+
+Supervisor → Agent
+"Offer the revised settlement amount."
+```
+
+Customer must not hear the supervisor during whisper mode.
+
+Record:
+
+```text
+Supervisor
+Agent
+Call ID
+Start Time
+End Time
+Action = WHISPER
+```
+
+---
+
+# 16. LISTEN / MONITOR
+
+Authorized supervisors should also be able to listen to active calls where supported by the telephony system.
+
+Actions:
+
+```text
+LISTEN
+WHISPER
+BARGE
+```
+
+All supervisor actions should be logged.
+
+---
+
+# 17. LIVE AGENT DASHBOARD
+
+Admin / Agency / Manager should have a live monitoring page.
+
+Example:
+
+```text
+LIVE AGENTS
+
+Agent       Campaign       Mode          Call Status       Duration
+---------------------------------------------------------------------
+Rahul       Recovery       PREVIEW       CONNECTED         03:22
+Amit        Delhi Loan     MANUAL        IDLE              --
+Vikas       Collection     PREVIEW       RINGING            00:18
+Rohit       Recovery       BREAK         BREAK             --
+```
+
+Possible statuses:
+
+```text
+OFFLINE
+IDLE
+DIALING
+RINGING
+CONNECTED
+WRAP_UP
+BREAK
+MANUAL
+PREVIEW
+```
+
+Refresh live data using WebSocket where appropriate instead of constant full-page refreshes.
+
+---
+
+# 18. AGENT CALL SCREEN
+
+Create a professional call-center interface.
+
+Example:
+
+```text
+----------------------------------------------------
+AGENT PANEL
+
+Agent: Rahul Kumar
+Mode: PREVIEW AUTO
+Online: 04:32:18
+
+----------------------------------------------------
+
+CUSTOMER
+
+Name: Rahul Sharma
+Phone: 9876543210
+Loan No: LN12345
+Amount: ₹42,000
+State: Delhi
+
+----------------------------------------------------
+
+CALL
+
+Status: CONNECTED
+Duration: 02:14
+
+[ MUTE ] [ HOLD ] [ END CALL ]
+
+----------------------------------------------------
+
+DISPOSITION
+
+[ Interested ]
+[ Not Interested ]
+[ Callback ]
+[ Promise To Pay ]
+[ Wrong Number ]
+
+Notes:
+[........................................]
+
+----------------------------------------------------
+```
+
+The UI should be fast and usable by call-center agents.
+
+---
+
+# 19. HOLD CALL
+
+Track hold events.
+
+Example:
+
+```text
+Call Start
+10:00:00
+
+Hold Start
+10:02:10
+
+Hold End
+10:03:30
+```
+
+Calculate:
+
+```text
+Total Call Duration
+Total Hold Duration
+Active Talk Duration
+```
+
+Reports must display these separately.
+
+---
+
+# 20. DAILY USER REPORT
+
+Every user should have a daily report.
+
+Example:
+
+```text
+DATE: 22-09-2026
+
+Agent: Rahul Kumar
+
+Login Time:           09:30:10
+Logout Time:          18:31:22
+
+Total Online:         08:41:12
+Manual Mode:          02:10:20
+Preview Mode:         05:40:32
+Break:                00:50:20
+
+Total Calls:          184
+Answered:             92
+Unanswered:           92
+
+Total Talk Time:      04:21:32
+Total Hold Time:      00:28:15
+Average Talk Time:    02:50
+
+Connected Calls:      92
+Failed Calls:         12
+Busy:                 20
+No Answer:            40
+Switched Off:         10
+Not Reachable:        10
+```
+
+---
+
+# 21. COMPLETE ADMIN / AGENCY / MANAGER REPORT
+
+The report system should provide detailed filtering.
+
+Filters:
+
+```text
+Date From
+Date To
+Agency
+Manager
+User
+Campaign
+Phone Number
+Call Status
+Disposition
+Call Result
+Mode
+```
+
+Reports should include:
+
+### Agent Activity
+
+```text
+Agent
+Login
+Logout
+Online Time
+Manual Time
+Preview Time
+Break Time
+```
+
+### Call Statistics
+
+```text
+Total Calls
+Answered
+Unanswered
+Busy
+No Answer
+Switched Off
+Not Reachable
+Failed
+Rejected
+```
+
+### Call Timing
+
+```text
+Total Talk Time
+Average Talk Time
+Total Hold Time
+Average Hold Time
+Longest Call
+Shortest Call
+```
+
+### Campaign
+
+```text
+Total Leads
+Processed Leads
+Pending Leads
+Attempted Leads
+Answered
+Unanswered
+Connected %
+```
+
+### Disposition
+
+Show counts for every disposition.
+
+---
+
+# 22. AUTO-DIAL CAMPAIGN REPORT
+
+For every uploaded campaign, show:
+
+```text
+Campaign Name
+Upload Date
+Uploaded By
+Total Leads
+Processed
+Pending
+Attempted
+Answered
+Unanswered
+Invalid
+Duplicate
+```
+
+And:
+
+```text
+ANSWERED
+---------
+92
+
+NO ANSWER
+---------
+40
+
+BUSY
+----
+20
+
+SWITCHED OFF
+-------------
+10
+
+NOT REACHABLE
+--------------
+10
+
+FAILED
+------
+12
+```
+
+Allow drilling down into every number.
+
+Example:
+
+Click:
+
+```text
+Switched Off: 10
+```
+
+Then show all 10 leads.
+
+---
+
+# 23. LEAD HISTORY
+
+Every lead must have a complete history.
+
+Example:
+
+```text
+CUSTOMER: Rahul Sharma
+PHONE: 9876543210
+
+CALL HISTORY
+
+22 Sep 09:30
+Agent: Amit
+Result: No Answer
+
+22 Sep 11:15
+Agent: Rahul
+Result: Switched Off
+
+22 Sep 14:20
+Agent: Rahul
+Result: Answered
+Duration: 04:22
+Disposition: Callback
+
+Recording: Available
+```
+
+This history must never be lost.
+
+---
+
+# 24. USER REPORT DOWNLOAD
+
+Agent can download only their own report.
+
+Supported formats:
+
+```text
+CSV
+Excel
+PDF
+```
+
+Report should contain only the logged-in user's authorized data.
+
+Never allow manipulation of URL parameters to access another user's report.
+
+---
+
+# 25. RECORDING DOWNLOAD SECURITY
+
+Do NOT do:
+
+```text
+/download/recording/123/
+```
+
+without authorization.
+
+Every recording request must check:
+
+```text
+Current User
+Recording Owner
+Agency
+Manager
+Role
+Permission
+```
+
+before returning the file.
+
+Prevent:
+
+* IDOR
+* unauthorized downloads
+* cross-agency access
+* cross-agent access
+
+---
+
+# 26. AGENCY ACTIVITY AUDIT
+
+Agency should be able to view activity of:
+
+```text
+Managers
+Users
+Campaigns
+Calls
+Uploads
+Reports
+Recordings
+Supervisor actions
+```
+
+Audit log example:
+
+```text
+Time
+User
+Role
+Action
+Object
+IP
+Result
+```
+
+Example:
+
+```text
+12:30:22
+Manager Amit
+Uploaded leads
+Campaign: Delhi Recovery
+Rows: 5,000
+IP: xxx.xxx.xxx.xxx
+```
+
+---
+
+# 27. AUDIT LOG
+
+Log important actions:
+
+```text
+LOGIN
+LOGOUT
+MODE_CHANGE
+CAMPAIGN_CREATE
+CAMPAIGN_UPDATE
+LEAD_UPLOAD
+LEAD_DELETE
+CALL_START
+CALL_ANSWER
+CALL_END
+RECORDING_ACCESS
+RECORDING_DOWNLOAD
+REPORT_DOWNLOAD
+BARGE
+WHISPER
+LISTEN
+LEAD_ASSIGN
+USER_CREATE
+USER_UPDATE
+```
+
+Audit logs should be immutable for normal users.
+
+---
+
+# 28. DATABASE DESIGN
+
+Design proper normalized database models.
+
+Suggested entities:
+
+```text
+Agency
+Manager
+User/Agent
+Campaign
+Lead
+LeadCustomField
+LeadImport
+LeadImportError
+LeadAssignment
+Call
+CallAttempt
+CallEvent
+CallDisposition
+CallRecording
+IVREvent
+AgentModeSession
+AgentActivity
+SupervisorAction
+AuditLog
+```
+
+Use proper foreign keys and indexes.
+
+Important indexes:
+
+```text
+phone_number
+campaign_id
+agency_id
+agent_id
+call_id
+created_at
+status
+disposition
+```
+
+Do not create an unnecessarily huge JSON-only database design.
+
+Use relational fields for frequently queried/reporting data.
+
+---
+
+# 29. LEAD QUEUE
+
+The auto-dialer queue must support concurrency.
+
+When multiple agents are in Preview mode:
+
+```text
+Agent A → Lead 1001
+Agent B → Lead 1002
+Agent C → Lead 1003
+```
+
+Never:
+
+```text
+Agent A → Lead 1001
+Agent B → Lead 1001
+```
+
+Use database transaction/locking or an appropriate queue mechanism.
+
+Lead states could be:
+
+```text
+NEW
+RESERVED
+DIALING
+RINGING
+CONNECTED
+COMPLETED
+CALLBACK
+FAILED
+EXHAUSTED
+```
+
+Reservation should have a timeout so a crashed agent does not permanently lock a lead.
+
+---
+
+# 30. CALLBACK SUPPORT
+
+If an agent selects:
+
+```text
+CALLBACK
+```
+
+store:
+
+```text
+Callback Date
+Callback Time
+Callback Agent
+Notes
+```
+
+The lead should become available according to the callback rules.
+
+---
+
+# 31. API DESIGN
+
+Create clean APIs for:
+
+```text
+Agent mode
+Campaigns
+Lead upload
+Lead queue
+Dialing
+Call status
+Call events
+Disposition
+Reports
+Recordings
+Live monitoring
+Barge
+Whisper
+Audit logs
+```
+
+Protect all APIs with authentication and role-based permissions.
+
+Do not trust frontend role information.
+
+Always verify permissions server-side.
+
+---
+
+# 32. REAL-TIME COMMUNICATION
+
+Where appropriate use:
+
+```text
+WebSocket
+```
+
+for:
+
+* Agent call status
+* Live call timer
+* Agent status
+* Preview dialer events
+* Incoming call state
+* Supervisor monitoring
+* Barge/whisper state
+
+Do not repeatedly refresh entire pages every second.
+
+---
+
+# 33. TELEPHONY INTEGRATION
+
+The implementation should be designed around Asterisk/VoIP if the existing project already uses it.
+
+Support events such as:
+
+```text
+Dialing
+Ringing
+Answered
+Hangup
+Busy
+No Answer
+Failed
+Hold
+Unhold
+Transfer
+Bridge
+```
+
+Use unique call IDs and correlate:
+
+```text
+Asterisk Call ID
+Application Call ID
+Lead
+Agent
+Campaign
+Recording
+```
+
+Do not determine call status purely from browser JavaScript.
+
+The telephony/server event should be authoritative.
+
+---
+
+# 34. RECORDING STORAGE
+
+Recording storage should support:
+
+```text
+Local storage
+OR
+S3-compatible object storage
+```
+
+Store metadata in the database.
+
+Example:
+
+```text
+Recording ID
+Call ID
+Storage Path
+Duration
+File Size
+Created At
+```
+
+Never expose unrestricted storage paths.
+
+---
+
+# 35. REPORT PERFORMANCE
+
+Reports may contain millions of call records.
+
+Do NOT load everything into memory.
+
+Use:
+
+* Pagination
+* Database aggregation
+* Indexed queries
+* Date filtering
+* Background report generation for large exports
+
+For large Excel/PDF reports, use asynchronous/background processing.
+
+---
+
+# 36. DASHBOARD
+
+Admin dashboard should show:
+
+```text
+Total Agencies
+Total Managers
+Total Agents
+Online Agents
+Agents on Preview
+Agents on Manual
+Agents on Break
+
+Today's Calls
+Answered
+Unanswered
+Connected %
+Total Talk Time
+
+Active Calls
+```
+
+Agency dashboard should show only agency data.
+
+Manager dashboard should show only assigned/authorized users.
+
+---
+
+# 37. SECURITY REQUIREMENTS
+
+Implement strict:
+
+```text
+RBAC
+Object-level permissions
+Agency-level isolation
+Manager-level isolation
+Recording access control
+Report access control
+Campaign access control
+Lead access control
+```
+
+Protect against:
+
+```text
+IDOR
+SQL Injection
+CSRF
+XSS
+Unauthorized API access
+Unauthorized recording access
+Unauthorized report downloads
+Cross-agency data leakage
+```
+
+Never rely on hidden buttons in frontend as a security mechanism.
+
+---
+
+# 38. TIMEZONE
+
+Use server/database timestamps consistently.
+
+Application timezone should be configurable.
+
+For our deployment, support:
+
+```text
+Asia/Kolkata
+```
+
+Reports must display dates/times consistently.
+
+Store timestamps in UTC if appropriate and convert for display.
+
+---
+
+# 39. REPORT EXPORTS
+
+Allow authorized users to export reports as:
+
+```text
+CSV
+XLSX
+PDF
+```
+
+Exports must respect exactly the same permissions as the web report.
+
+Example:
+
+Agent export:
+
+```text
+ONLY agent's own data
+```
+
+Manager export:
+
+```text
+ONLY authorized team data
+```
+
+Agency export:
+
+```text
+ONLY agency data
+```
+
+Admin:
+
+```text
+ALL authorized data
+```
+
+---
+
+# 40. UI REQUIREMENTS
+
+Create a professional call-center UI.
+
+Use:
+
+* Responsive dashboard
+* Tables
+* Filters
+* Search
+* Pagination
+* Status badges
+* Call timers
+* Charts
+* Modal dialogs
+* Upload progress
+* Import validation results
+* Live agent monitoring
+
+Do not make the UI unnecessarily complicated.
+
+The agent screen should prioritize:
+
+```text
+Customer data
+Call status
+Call controls
+Disposition
+Notes
+```
+
+---
+
+# 41. IMPORTANT AUTO-DIAL RULE
+
+When an agent changes to:
+
+```text
+PREVIEW
+```
+
+the system should automatically begin the next eligible lead according to campaign rules.
+
+When agent changes to:
+
+```text
+MANUAL
+```
+
+automatic dialing must stop.
+
+When agent changes to:
+
+```text
+BREAK
+```
+
+automatic dialing must stop immediately and the current state must be handled safely.
+
+When agent becomes:
+
+```text
+OFFLINE
+```
+
+no new lead should be assigned.
+
+A lead currently being dialed must be safely finalized/released according to its call state.
+
+---
+
+# 42. AGENT SESSION SAFETY
+
+If browser closes unexpectedly:
+
+* Detect stale session
+* Stop assigning new calls
+* Release/reschedule reserved lead after timeout
+* Preserve call history
+* Preserve mode history
+
+If network connection temporarily drops, do not create duplicate dialing sessions.
+
+Only one active Preview session should exist per agent.
+
+---
+
+# 43. CALL DISPOSITION + WRAP-UP
+
+After a call:
+
+```text
+CALL ENDED
+     ↓
+WRAP-UP
+     ↓
+Agent selects disposition
+     ↓
+Add notes
+     ↓
+Save
+     ↓
+Next Preview Lead
+```
+
+Provide configurable wrap-up time.
+
+Example:
+
+```text
+Wrap-up: 30 seconds
+```
+
+Admin should be able to configure this per campaign if needed.
+
+---
+
+# 44. TESTING REQUIREMENTS
+
+Create tests for:
+
+### Permissions
+
+Verify:
+
+```text
+Agent cannot see Agent B's recordings
+Agent cannot see another user's report
+Manager cannot see unauthorized manager
+Agency cannot see another agency
+```
+
+### Auto Dial
+
+Verify:
+
+```text
+Two agents never receive same lead
+Preview starts dialing
+Manual stops auto dialing
+Break stops new dialing
+Offline stops new dialing
+```
+
+### Calls
+
+Test:
+
+```text
+Answered
+Busy
+No Answer
+Switched Off
+Not Reachable
+Failed
+Rejected
+IVR
+```
+
+### Reports
+
+Verify calculations:
+
+```text
+Total Calls
+Answered
+Unanswered
+Talk Time
+Hold Time
+Mode Time
+Online Time
+```
+
+### Recordings
+
+Verify:
+
+```text
+Owner can access
+Unauthorized user cannot access
+Manager permission works
+Agency permission works
+Admin permission works
+```
+
+### Supervisor
+
+Verify:
+
+```text
+Listen
+Whisper
+Barge
+```
+
+and ensure permissions are enforced.
+
+---
+
+# 45. IMPLEMENTATION APPROACH
+
+Before changing code:
+
+1. Inspect the existing project.
+2. Identify framework and current architecture.
+3. Identify existing user/role models.
+4. Identify existing campaign models.
+5. Identify existing telephony/Asterisk integration.
+6. Identify existing call/recording implementation.
+7. Identify existing WebSocket infrastructure.
+8. Identify existing reporting system.
+9. Reuse existing architecture wherever possible.
+
+Do NOT blindly create duplicate models or duplicate authentication systems.
+
+First prepare an implementation plan based on the existing codebase.
+
+Then implement incrementally.
+
+---
+
+# 46. MIGRATIONS
+
+Create proper database migrations.
+
+Do not destroy existing production data.
+
+Before changing an existing model:
+
+* inspect current schema
+* create migration
+* preserve existing records
+* add indexes carefully
+
+---
+
+# 47. LOGGING
+
+Add structured logs for:
+
+```text
+Auto dial
+Lead reservation
+Call initiation
+Call events
+Call completion
+Recording
+Mode changes
+Supervisor actions
+Upload processing
+Report generation
+Permission failures
+```
+
+Do not log sensitive customer information unnecessarily.
+
+---
+
+# 48. ERROR HANDLING
+
+If dialing fails:
+
+```text
+Do not crash the agent session.
+Log the error.
+Mark call attempt correctly.
+Release/reschedule lead according to rules.
+Continue with next eligible lead where appropriate.
+```
+
+If upload fails:
+
+```text
+Do not partially corrupt campaign data.
+Use transaction/batch processing.
+Show exact error.
+```
+
+---
+
+# 49. DELIVERABLES
+
+Implement the complete feature and provide:
+
+1. Database models
+2. Migrations
+3. Backend APIs
+4. Frontend pages
+5. Agent calling screen
+6. Preview auto-dial logic
+7. Lead upload system
+8. Campaign integration
+9. Agent mode tracking
+10. Call event tracking
+11. IVR event tracking
+12. Recording access control
+13. Listen/Whisper/Barge
+14. Live agent dashboard
+15. Reports
+16. CSV/XLSX/PDF exports
+17. Audit logs
+18. Permission system
+19. Automated tests
+20. Deployment/configuration instructions
+
+---
+
+# 50. FINAL ACCEPTANCE FLOW
+
+The following complete scenario must work:
+
+### Step 1
+
+Admin creates:
+
+```text
+Agency A
+```
+
+### Step 2
+
+Agency creates:
+
+```text
+Campaign: Delhi Recovery
+```
+
+### Step 3
+
+Manager uploads:
+
+```text
+10,000 leads.xlsx
+```
+
+### Step 4
+
+System validates and imports:
+
+```text
+9,700 valid
+200 duplicate
+100 invalid
+```
+
+### Step 5
+
+Agent Rahul logs in.
+
+He selects:
+
+```text
+PREVIEW AUTO
+```
+
+### Step 6
+
+System reserves Lead #1.
+
+Customer information appears.
+
+System starts the outbound call.
+
+### Step 7
+
+If customer answers:
+
+```text
+Lead screen remains visible
+Call timer starts
+Recording starts
+Agent handles call
+```
+
+### Step 8
+
+Call ends.
+
+Agent selects:
+
+```text
+CALLBACK
+```
+
+and enters notes.
+
+### Step 9
+
+System records:
+
+```text
+Call
+Duration
+Talk time
+Recording
+Disposition
+Lead history
+Agent activity
+Campaign statistics
+```
+
+### Step 10
+
+System moves to next eligible lead.
+
+### Step 11
+
+If another lead is:
+
+```text
+Switched Off
+```
+
+the system records:
+
+```text
+Result = SWITCHED_OFF
+```
+
+and continues according to campaign rules.
+
+### Step 12
+
+If another lead is:
+
+```text
+Ringing → No Answer
+```
+
+record:
+
+```text
+RINGING_NO_ANSWER
+```
+
+### Step 13
+
+If an IVR is encountered:
+
+Record every relevant IVR event.
+
+### Step 14
+
+Manager opens Live Monitoring.
+
+They can see:
+
+```text
+Rahul
+PREVIEW
+CONNECTED
+02:31
+```
+
+Manager can:
+
+```text
+LISTEN
+WHISPER
+BARGE
+```
+
+according to permissions.
+
+### Step 15
+
+At the end of the day:
+
+Admin/Agency/Manager can see:
+
+```text
+Total Calls
+Answered
+Unanswered
+Switched Off
+Busy
+Not Reachable
+Failed
+IVR
+Total Talk Time
+Total Hold Time
+Agent Online Time
+Manual Time
+Preview Time
+Break Time
+Disposition statistics
+Campaign statistics
+```
+
+### Step 16
+
+Rahul can download:
+
+```text
+ONLY HIS OWN REPORT
+```
+
+and:
+
+```text
+ONLY HIS OWN CALL RECORDINGS
+```
+
+No other agent's data must be accessible to him.
+
+---
+
+# CRITICAL REQUIREMENT
+
+Treat this as a **production call-center system**, not a demo.
+
+Prioritize:
+
+1. Data isolation
+2. Correct call-event tracking
+3. No duplicate lead dialing
+4. Accurate reports
+5. Recording security
+6. Real-time agent state
+7. Reliable telephony integration
+8. Server-side authorization
+9. Concurrency safety
+10. Auditability
+
+Before implementation, inspect the existing codebase and explain which existing models/services will be reused and which new components are required.
+
+Do not rewrite unrelated parts of the application.
+
+Do not remove existing functionality.
+
+Do not use mock data for the final implementation.
+
+If a telephony integration already exists, extend it instead of creating a second telephony architecture.

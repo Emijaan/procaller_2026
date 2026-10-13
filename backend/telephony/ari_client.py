@@ -15,15 +15,10 @@ def _cfg():
 
 
 def originate_to_conference(number, conference, callerid_token, timeout=60):
+    from telephony.pstn import ari_pstn_endpoint
+
     base, auth = _cfg()
-    # Same path VICIdial uses: Local/33 + pad + 10digit @default
-    # ${EXTEN:3} on _33X. strips "331" and dials SIP/gsm222/<10digit>
-    local_exten = f"331{number}" if len(number) == 10 else number
-    endpoint = (
-        f"Local/{local_exten}@default"
-        if len(number) == 10
-        else f"Local/{number}@procaller-outbound"
-    )
+    endpoint = ari_pstn_endpoint(number)
     response = requests.post(
         f"{base}/ari/channels",
         auth=auth,

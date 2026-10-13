@@ -1,3 +1,5 @@
+import os
+
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
@@ -23,5 +25,5 @@ urlpatterns = [
     path("api/", include("telephony.urls")),
 ]
 
-if settings.DEBUG:
+if settings.DEBUG or os.getenv("SERVE_MEDIA", "1") == "1":
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

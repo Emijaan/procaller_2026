@@ -102,3 +102,58 @@ class TenantIsolationTests(TestCase):
         all_ids = [row["id"] for row in all_rows.data["results"]]
         self.assertIn(call_a.id, all_ids)
         self.assertIn(call_b.id, all_ids)
+
+    def test_super_admin_can_edit_deactivate_and_delete_staff(self):
+        root = self._login("root@test.com")
+        created = root.post(
+            "/api/staff/",
+            {
+                "email": "mgr@a.com",
+                "password": "x",
+                "role": "manager",
+                "first_name": "Meg",
+                "organization": self.a.id,
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        pk = created.data["id"]
+        patched = root.patch(f"/api/staff/{pk}/", {"team": "Collections", "last_name": "Shah"}, format="json")
+        self.assertEqual(patched.status_code, 200, patched.data)
+        self.assertEqual(patched.data["team"], "Collections")
+        deactivated = root.patch(f"/api/staff/{pk}/", {"is_active": False}, format="json")
+        self.assertEqual(deactivated.status_code, 200)
+        self.assertFalse(deactivated.data["is_active"])
+        deleted = root.delete(f"/api/staff/{pk}/")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertTrue(deleted.data.get("deleted") or deleted.data.get("deactivated"))
+        self.assertFalse(User.objects.filter(pk=pk, is_active=True).exists())
+
+    def test_super_admin_cannot_delete_self(self):
+        root = self._login("root@test.com")
+        res = root.delete(f"/api/staff/{self.super.id}/")
+        self.assertEqual(res.status_code, 400)
+
+    def test_agency_cannot_manage_other_tenant_staff(self):
+        client = self._login("a@test.com")
+        res = client.patch(f"/api/staff/{self.agency_b.id}/", {"team": "Nope"}, format="json")
+        self.assertEqual(res.status_code, 404)
+
+    def test_super_admin_can_edit_and_deactivate_agency(self):
+        root = self._login("root@test.com")
+        created = root.post(
+            "/api/agencies/",
+            {"name": "New Co", "email": "newco@test.com", "max_managers": 2, "max_admins": 2, "max_users": 5},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        pk = created.data["id"]
+        patched = root.patch(f"/api/agencies/{pk}/", {"max_users": 9, "name": "New Co Ltd"}, format="json")
+        self.assertEqual(patched.status_code, 200, patched.data)
+        self.assertEqual(patched.data["max_users"], 9)
+        self.assertEqual(patched.data["name"], "New Co Ltd")
+        paused = root.patch(f"/api/agencies/{pk}/", {"is_active": False, "subscription_status": "suspended"}, format="json")
+        self.assertEqual(paused.status_code, 200)
+        self.assertFalse(paused.data["is_active"])
+        removed = root.delete(f"/api/agencies/{pk}/")
+        self.assertEqual(removed.status_code, 200)

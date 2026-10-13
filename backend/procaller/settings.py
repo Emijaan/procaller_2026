@@ -108,6 +108,16 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CSRF_TRUSTED_ORIGINS",
+        "http://localhost:8443,http://127.0.0.1:8443",
+    ).split(",")
+    if origin.strip()
+]
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = True
 
 CHANNEL_LAYERS = {
     "default": {
@@ -147,4 +157,6 @@ ASTERISK = {
     "TRUNK": os.getenv("ASTERISK_TRUNK", "gsm222"),
     "DIAL_PREFIX": os.getenv("ASTERISK_DIAL_PREFIX", ""),
     "STRIP_COUNTRY_CODE": os.getenv("ASTERISK_STRIP_COUNTRY_CODE", "91"),
+    "ORIGINATE_STYLE": os.getenv("ASTERISK_ORIGINATE_STYLE", "vicibox"),
+    "CHANNEL_TECH": os.getenv("ASTERISK_CHANNEL_TECH", "sip"),
 }

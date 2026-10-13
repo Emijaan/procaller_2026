@@ -16,6 +16,9 @@ from .utils import make_callerid_token, normalize_phone
 
 
 def start_session(user, campaign=None):
+    from telephony.sip_provision import ensure_sip_identity
+
+    ensure_sip_identity(user)
     session = AgentSession.objects.filter(user=user, ended_at__isnull=True).order_by("-id").first()
     if not session:
         session = AgentSession.objects.create(

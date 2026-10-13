@@ -1084,7 +1084,7 @@ Do not skip security or tenant isolation.
 The final application should be production-ready, scalable, secure, maintainable, and prepared for future Asterisk/SIP/WebRTC integration.
 
 IMPORTANT:
-Do not use Docker unless explicitly requested.
+Do not use Docker unless explicitly requested.you 
 
 Use PostgreSQL as the database.
 

@@ -316,3 +316,31 @@ class PreviewAutoDialerTests(TestCase):
         camp = agency.patch(f"/api/campaigns/{self.camp.id}/", {"dial_ratio": 99}, format="json")
         self.assertEqual(camp.status_code, 200)
         self.assertEqual(camp.data["dial_ratio"], 32)
+
+
+@override_settings(TELEPHONY_BACKEND="sandbox")
+class SipProvisionTests(TestCase):
+    def test_users_without_extension_get_a_free_21xx(self):
+        from telephony.sip_provision import ensure_sip_identity, next_extension
+
+        taken = User.objects.create_user(
+            email="taken@test.com", password="x", role=User.Role.USER, extension="2100", sip_username="2100"
+        )
+        self.assertEqual(taken.extension, "2100")
+        self.assertEqual(next_extension(), "2101")
+        newbie = User.objects.create_user(email="new@test.com", password="x", role=User.Role.SUPER_ADMIN)
+        ensure_sip_identity(newbie)
+        newbie.refresh_from_db()
+        self.assertEqual(newbie.extension, "2101")
+        self.assertEqual(newbie.sip_username, "2101")
+        self.assertEqual(newbie.sip_password, "2101")
+
+    def test_session_start_assigns_sip_identity(self):
+        from telephony.services import start_session
+
+        user = User.objects.create_user(email="sa@test.com", password="x", role=User.Role.SUPER_ADMIN)
+        self.assertEqual(user.extension, "")
+        start_session(user)
+        user.refresh_from_db()
+        self.assertTrue(user.extension.startswith("21"))
+        self.assertEqual(user.sip_username, user.extension)

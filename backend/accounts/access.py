@@ -14,6 +14,30 @@ def is_super_admin(user):
     return role_of(user) == User.Role.SUPER_ADMIN or bool(user.is_superuser and role_of(user) in {User.Role.SUPER_ADMIN, User.Role.ADMIN})
 
 
+def staff_manage_code(role):
+    role = role or User.Role.USER
+    if role in {User.Role.SUPERVISOR, User.Role.MANAGER}:
+        return "manage_manager"
+    if role == User.Role.ADMIN:
+        return "manage_admin"
+    if role == User.Role.AGENCY:
+        return "manage_agency"
+    if role == User.Role.SUPER_ADMIN:
+        return "create_agency"
+    return "manage_user"
+
+
+def staff_create_code(role):
+    role = role or User.Role.USER
+    if role in {User.Role.SUPERVISOR, User.Role.MANAGER}:
+        return "create_manager"
+    if role == User.Role.ADMIN:
+        return "create_admin"
+    if role in {User.Role.AGENCY, User.Role.SUPER_ADMIN}:
+        return "create_agency"
+    return "create_user"
+
+
 def has_perm(user, code):
     if not user or not user.is_authenticated:
         return False

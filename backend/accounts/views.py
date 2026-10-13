@@ -9,7 +9,18 @@ from campaigns.models import Campaign
 from crm.models import Contact
 from telephony.models import Call
 
-from .access import agency_of, has_perm, is_super_admin, require_perm, role_of, scoped_campaigns, scoped_leads, scoped_users
+from .access import (
+    agency_of,
+    has_perm,
+    is_super_admin,
+    require_perm,
+    role_of,
+    scoped_campaigns,
+    scoped_leads,
+    scoped_users,
+    staff_create_code,
+    staff_manage_code,
+)
 from .models import AuditLog, Organization, User
 from .serializers import (
     AuditLogSerializer,
@@ -143,6 +154,34 @@ class AgencyDetailView(APIView):
         data.update(usage_for_agency(org))
         return Response(data)
 
+    def delete(self, request, pk):
+        require_perm(request.user, "manage_agency")
+        if not is_super_admin(request.user):
+            return Response({"detail": "Only Super Admin can delete an agency."}, status=403)
+        org = self._get(request, pk)
+        if org is None:
+            return Response({"detail": "Not found"}, status=404)
+        if org is False:
+            return Response({"detail": "Not allowed"}, status=403)
+        hard = str(request.query_params.get("hard") or request.data.get("hard") or "").lower() in {"1", "true", "yes"}
+        if not hard and (org.members.exists() or org.campaigns.exists() or org.leads.exists()):
+            org.is_active = False
+            org.subscription_status = Organization.Subscription.SUSPENDED
+            org.save(update_fields=["is_active", "subscription_status", "updated_at"])
+            org.members.exclude(role=User.Role.SUPER_ADMIN).update(is_active=False)
+            write_audit(request.user, "agency_deactivate", "agency", org.id, request)
+            return Response(
+                {
+                    "ok": True,
+                    "deactivated": True,
+                    "detail": "Agency has team or campaigns, so it was deactivated instead of deleted.",
+                }
+            )
+        org_id = org.id
+        org.delete()
+        write_audit(request.user, "agency_delete", "agency", org_id, request)
+        return Response({"ok": True, "deleted": True})
+
 
 class StaffListCreateView(APIView):
     permission_classes = [IsAuthenticated]
@@ -161,13 +200,7 @@ class StaffListCreateView(APIView):
 
     def post(self, request):
         role = request.data.get("role") or User.Role.USER
-        perm_map = {
-            User.Role.MANAGER: "create_manager",
-            User.Role.ADMIN: "create_admin",
-            User.Role.USER: "create_user",
-            User.Role.AGENCY: "create_agency",
-        }
-        require_perm(request.user, perm_map.get(role, "manage_user"))
+        require_perm(request.user, staff_create_code(role))
         org = None
         if request.data.get("organization"):
             org = Organization.objects.filter(pk=request.data["organization"]).first()
@@ -200,11 +233,29 @@ class StaffListCreateView(APIView):
 class StaffDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def patch(self, request, pk):
-        target = scoped_users(request.user).filter(pk=pk).first()
+    def _target(self, request, pk):
+        return scoped_users(request.user).filter(pk=pk).first()
+
+    def get(self, request, pk):
+        target = self._target(request, pk)
         if not target:
             return Response({"detail": "Not found"}, status=404)
-        require_perm(request.user, "manage_user")
+        return Response(UserSerializer(target).data)
+
+    def patch(self, request, pk):
+        target = self._target(request, pk)
+        if not target:
+            return Response({"detail": "Not found"}, status=404)
+        require_perm(request.user, staff_manage_code(target.role))
+        new_role = request.data.get("role")
+        if new_role:
+            require_perm(request.user, staff_manage_code(new_role))
+        if target.pk == request.user.pk and request.data.get("is_active") is False:
+            return Response({"detail": "You cannot deactivate your own account."}, status=400)
+        if is_super_admin(target) and request.data.get("role") and request.data.get("role") != User.Role.SUPER_ADMIN:
+            remaining = User.objects.filter(role=User.Role.SUPER_ADMIN, is_active=True).exclude(pk=target.pk).count()
+            if remaining < 1:
+                return Response({"detail": "Cannot demote the last Super Admin."}, status=400)
         serializer = UserWriteSerializer(target, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         password = serializer.validated_data.pop("password", None)
@@ -212,8 +263,36 @@ class StaffDetailView(APIView):
         if password:
             user.set_password(password)
             user.save(update_fields=["password"])
-        write_audit(request.user, "user_update", "user", user.id, request)
+        write_audit(request.user, "user_update", "user", user.id, request, {"role": user.role})
         return Response(UserSerializer(user).data)
+
+    def delete(self, request, pk):
+        target = self._target(request, pk)
+        if not target:
+            return Response({"detail": "Not found"}, status=404)
+        require_perm(request.user, staff_manage_code(target.role))
+        if target.pk == request.user.pk:
+            return Response({"detail": "You cannot delete your own account."}, status=400)
+        if is_super_admin(target):
+            remaining = User.objects.filter(role=User.Role.SUPER_ADMIN, is_active=True).exclude(pk=target.pk).count()
+            if remaining < 1:
+                return Response({"detail": "Cannot delete the last Super Admin."}, status=400)
+        hard = str(request.query_params.get("hard") or request.data.get("hard") or "").lower() in {"1", "true", "yes"}
+        if not hard and target.calls.exists():
+            target.is_active = False
+            target.save(update_fields=["is_active"])
+            write_audit(request.user, "user_deactivate", "user", target.id, request)
+            return Response(
+                {
+                    "ok": True,
+                    "deactivated": True,
+                    "detail": "Account has call history, so it was deactivated instead of deleted.",
+                }
+            )
+        user_id = target.id
+        target.delete()
+        write_audit(request.user, "user_delete", "user", user_id, request)
+        return Response({"ok": True, "deleted": True})
 
 
 class DashboardView(APIView):

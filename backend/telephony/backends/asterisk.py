@@ -14,14 +14,16 @@ class AsteriskTelephony(TelephonyBackend):
     name = "asterisk"
 
     def session_payload(self, user, session):
-        sip_user = user.sip_username or user.extension or f"210{user.id}"
+        from telephony.sip_provision import sip_login_for
+
+        sip_user, sip_password = sip_login_for(user)
         conference = f"pc{session.id}"
         return {
             "mode": "asterisk",
             "ice_servers": [{"urls": "stun:stun.l.google.com:19302"}],
             "sip": {
                 "uri": f"sip:{sip_user}@{settings.ASTERISK['SIP_DOMAIN']}",
-                "password": user.sip_password or sip_user,
+                "password": sip_password,
                 "ws_url": settings.ASTERISK["SIP_WS"],
                 "display_name": user.display_name,
                 "conference": conference,

@@ -1,0 +1,334 @@
+ProCaller deployment notes
+==========================
+Last updated: 13 Oct 2026
+
+Purpose: understand every call route, then deploy ProCaller on a FRESH Ubuntu
+server, still using the SAME Synway GSM gateway: SIP peer name gsm222.
+
+Do not take over ViciBox port 80. Ubuntu is a new Asterisk + Django host.
+gsm222 stays the PSTN/SIM path (today it lives on / is reachable as the
+existing Synway gateway used by ViciBox).
+
+
+1. What ProCaller is (calling stack)
+------------------------------------
+Browser Dialer (React + sip.js WebRTC)
+  -> registers as SIP phone 2100 / 2101 / 2102
+  -> INVITEs either a 10-digit mobile OR a conference room pc{sessionId}
+
+Django (Daphne / ASGI)
+  -> stores Call rows, wrap-up, dispositions, recordings ACL
+  -> ARI  HTTP  :8088  originate / hangup customer legs (ratio > 1)
+  -> AMI  TCP   :5038  backup originate + hangup
+
+Asterisk
+  -> WebRTC SIP for agents
+  -> Dial(SIP/gsm222/<10digit>) to the Synway GSM gateway
+  -> ConfBridge for dial-ratio 2-32 (first answer wins)
+
+.env switch:
+  TELEPHONY_BACKEND=asterisk   # real calls
+  TELEPHONY_BACKEND=sandbox    # fake ring/answer, no Asterisk
+
+
+2. Same gsm222 gateway (locked decision)
+----------------------------------------
+We KEEP using Synway trunk name: gsm222
+
+Today on ViciBox that peer is chan_sip:
+  Dial(SIP/gsm222/${EXTEN})
+
+On Ubuntu Asterisk (PJSIP preferred) map the same gateway:
+  Option A (simplest if gateway is chan_sip compatible):
+    Dial(SIP/gsm222/${EXTEN})
+    and keep a chan_sip peer [gsm222] pointing at the Synway IP.
+
+  Option B (clean Ubuntu):
+    PJSIP endpoint gsm222 (identify by IP of Synway)
+    Dial(PJSIP/${EXTEN}@gsm222)
+
+Either way the DESTINATION is the same hardware gateway. Do not buy a new
+ITSP for phase 1.
+
+What you MUST know about gsm222:
+  - It is typically 1 SIM / 1 concurrent PSTN call unless the chassis has
+    more ports. Dial ratio 4 will try 4 mobiles at once; extra legs will
+    fail or queue on the gateway. Ratio 1 is the safe default until we
+    confirm how many GSM ports exist.
+  - Agent WebRTC and customer GSM audio both mix in Asterisk. The gateway
+    only sees the customer leg.
+  - Django ARI "watch_gateway" currently looks for the string "gsm222" in
+    the Asterisk channel name. Keep that name so ringing/answer detection
+    keeps working.
+
+
+3. Two call routes (do not mix them up)
+---------------------------------------
+
+ROUTE 1 — Manual, and Preview Auto with ratio = 1
+  "Client dial"  (this is the proven 1:1 path)
+
+  1. Browser POST /api/telephony/session/
+     Django returns:
+       sip uri      sip:2101@<asterisk-ip>
+       password     2101 (or user.sip_password)
+       ws_url       ws://<asterisk-ip>:8088/ws
+       conference   pc{session.id}   (not used on ratio 1)
+
+  2. sip.js registers over WebSocket.
+
+  3. Agent presses Call.
+     POST /api/calls/  { phone, client_dial: true }
+     Django ONLY creates the Call row. Asterisk is NOT originated by Django.
+
+  4. Browser INVITE sip:<10digit>@<asterisk-ip>
+     extra header: X-ProCaller-Call-Id: <call.id>
+
+  5. Dialplan context [procaller-agent], pattern _X.
+       Progress()
+       Answer()          ; WebRTC DTLS up first so agent hears in-band ring
+       MixMonitor pc-<id>.wav
+       Dial(SIP/gsm222/${EXTEN},60,tTo)
+
+  6. Ringing: browser reports POST /api/calls/<id>/ringing/
+     Django also polls ARI for a channel whose name contains gsm222.
+
+  7. Customer answers: talk path is
+       mic <-> WebRTC <-> Asterisk <-> SIP/gsm222 <-> SIM
+
+  8. Hangup: browser BYE + POST /api/calls/<id>/hangup/
+     Browser also uploads its own WebM recording to Django.
+
+ROUTE 2 — Preview Auto with ratio 2..32
+  "Server originate into conference"
+
+  1. POST /api/calls/preview-batch/  { campaign_id, ratio }
+     Django reserves N distinct leads, same dial_batch id.
+
+  2. For each number Django ARI POST /ari/channels
+     TODAY (ViciBox only):
+       endpoint = Local/331<10digit>@default
+       then when that answers, drop into context procaller-agent
+       extension = pc{session.id}  (ConfBridge)
+
+     UBUNTU MUST CHANGE THIS:
+       Do NOT use Local/331...@default  (that is a VICIdial trick).
+       Originate straight to gsm222 then into conference:
+         endpoint = SIP/gsm222/<10digit>
+         or PJSIP/<10digit>@gsm222
+         app/context = procaller-agent / pc{session.id}
+
+  3. Browser INVITE sip:pc{session.id}@<asterisk-ip>
+     Dialplan [procaller-agent] _pc. -> ConfBridge(${EXTEN},procaller_bridge,procaller_user)
+
+  4. First gsm222 leg that goes UP = winner.
+     Django drop_parallel_legs() hangs up the other ARI channels.
+
+  5. Agent hears only the winner in the conference.
+
+
+4. Asterisk objects ProCaller expects
+-------------------------------------
+SIP / PJSIP WebRTC agents (from backend/asterisk/sip_procaller.conf
+and pjsip_procaller.conf):
+  2100 secret 2100   (super admin demo)
+  2101 secret 2101   (agent demo)
+  2102 secret 2102
+  context = procaller-agent
+  webrtc / DTLS / ICE / ulaw+alaw  (opus optional)
+  cert: /etc/asterisk/keys/procaller.pem
+
+Contexts (backend/asterisk/extensions_procaller.conf):
+  [procaller-agent]
+    _pc.   -> ConfBridge
+    _X.    -> Dial gsm222   (manual / ratio 1)
+
+  [procaller-outbound]
+    _21XX  -> Dial SIP/${EXTEN}     (internal WebRTC)
+    _1XXX  -> Dial SIP/${EXTEN}     (legacy VICIdial phones; skip on Ubuntu)
+    _X.    -> Dial gsm222
+
+ConfBridge (backend/asterisk/confbridge_procaller.conf):
+  [procaller_user]  [procaller_bridge]
+  quiet, no join/leave sounds
+
+ARI user (backend/asterisk/ari_procaller.conf):
+  [procaller]  password ProCallerAmi0478  (change on Ubuntu)
+
+AMI user (backend/asterisk/manager_procaller.conf):
+  [procaller]  secret ProCallerAmi0478
+  permit 127.0.0.1 and 192.168.0.0/16
+  originate permission required
+
+Hold music is NOT in Asterisk. Browser mixes campaign MP3 onto WebRTC.
+Listen/whisper/barge is logged only; ChanSpy is not live yet.
+
+
+5. Django .env for Ubuntu + same gsm222
+---------------------------------------
+Put Django on the Ubuntu box (or on LAN talking to Ubuntu Asterisk).
+
+TELEPHONY_BACKEND=asterisk
+ASTERISK_ARI_URL=http://127.0.0.1:8088
+ASTERISK_ARI_USER=procaller
+ASTERISK_ARI_PASSWORD=<new-secret>
+ASTERISK_ARI_APP=procaller
+ASTERISK_AMI_HOST=127.0.0.1
+ASTERISK_AMI_PORT=5038
+ASTERISK_AMI_USER=procaller
+ASTERISK_AMI_SECRET=<same-secret>
+ASTERISK_SIP_WS=ws://<ubuntu-lan-or-public-ip>:8088/ws
+ASTERISK_SIP_DOMAIN=<same-ip-or-hostname>
+ASTERISK_TRUNK=gsm222
+ASTERISK_STRIP_COUNTRY_CODE=91
+
+Browser MUST reach ASTERISK_SIP_WS and RTP. AMI/ARI can stay localhost
+if Django is on the same Ubuntu machine.
+
+If Django stays on another PC (Windows office PC), point ARI/AMI at the
+Ubuntu LAN IP, and still keep AMI/ARI off the public internet.
+
+
+6. Ports on Ubuntu Asterisk
+---------------------------
+  5060/udp     SIP signaling to gsm222 (and optional UDP phones)
+  8088/tcp     ARI HTTP + SIP WebSocket /ws
+  5038/tcp     AMI  (LAN only, never on the router)
+  10000-20000/udp   RTP (WebRTC + gsm222)
+  8000/tcp     Django API (Daphne)  LAN or behind nginx
+  80/443       nginx UI  (only if this Ubuntu box is the website;
+               do not steal ViciBox :80)
+
+Router: do NOT forward 5038 or 5432. Forward 80/443 only if the public
+site is this Ubuntu box. WebRTC from the internet also needs 8088 and RTP
+unless you put nginx TLS in front of WS (wss).
+
+
+7. Ubuntu install order (when deploying)
+----------------------------------------
+Fresh Ubuntu 22.04/24.04. Do not install VICIdial.
+
+A. OS packages
+   asterisk  (distro or compiled 18/20)
+   postgresql
+   python3.12 + venv, nginx, nodejs 20 (to build frontend once)
+   openssl  (DTLS cert)
+
+B. Copy this repo to /opt/procaller_2026
+   (project folder name = procaller_2026)
+
+C. Asterisk config (from backend/asterisk/)
+   - Generate /etc/asterisk/keys/procaller.pem
+   - Include sip_procaller.conf OR convert agents to pjsip_procaller.conf
+   - Include extensions_procaller.conf in extensions.conf
+   - Include confbridge_procaller.conf
+   - Enable http.conf (enabled=yes, bindaddr=0.0.0.0, tls optional)
+   - Enable ari.conf + include ari_procaller.conf
+   - Enable manager.conf + include manager_procaller.conf
+   - CREATE peer/endpoint gsm222 pointing at the SAME Synway IP/port
+     the ViciBox box uses today. Copy host, username, secret, codecs
+     (usually ulaw/alaw) from the live sip.conf [gsm222] on 192.168.1.200
+   - Change Dial() targets if using PJSIP:
+       Dial(PJSIP/${EXTEN}@gsm222,60,tTo)
+   - Change Django ari_client.originate_to_conference() off Local/331@default
+     to SIP/gsm222/<number> or PJSIP/<number>@gsm222
+   - asterisk -rx "core reload"  then
+     asterisk -rx "sip show peer gsm222"  (or pjsip show endpoint gsm222)
+
+D. PostgreSQL
+   CREATE USER / DATABASE procaller
+   Django DATABASE_URL=postgres://...
+
+E. Django
+   venv, pip install -r backend/requirements.txt
+   migrate, seed_demo
+   systemd: daphne -b 127.0.0.1 -p 8000 procaller.asgi:application
+
+F. Frontend
+   npm run build
+   nginx serves frontend/dist
+   proxy /api /admin /media /ws -> 127.0.0.1:8000
+
+G. Prove Route 1 BEFORE Route 2
+   1. Agent login agent@apinfotech.com  (demo password from seed)
+   2. Dialer Manual, call a real mobile
+   3. Confirm gsm222 channel in "core show channels"
+   4. Then try Preview Auto ratio 1
+   5. Only then enable ratio 2 (remember: one SIM = one live customer)
+
+
+8. Code that must change for Ubuntu + gsm222 (no ViciBox)
+---------------------------------------------------------
+File: backend/telephony/ari_client.py
+  originate_to_conference()
+  TODAY:
+    Local/331{number}@default     # VICIdial _33X. strip
+  UBUNTU:
+    SIP/gsm222/{number}
+    or PJSIP/{number}@gsm222
+  still drop the answered channel into context procaller-agent
+  extension pc{session}
+
+File: backend/asterisk/extensions_procaller.conf
+  Keep Dial(...gsm222...)
+  Drop _1XXX VICIdial phone pattern if those phones are not on Ubuntu.
+
+File: backend/asterisk/pjsip_procaller.conf
+  Add [gsm222] endpoint/identify/aor from the live Synway settings.
+  Prefer this over chan_sip on Ubuntu.
+
+Do NOT change:
+  conference names pc{id}
+  agent extensions 210x
+  watch_gateway looking for "gsm222" in channel name
+  client_dial Route 1 flow in Dialer.tsx
+
+
+9. Copy gsm222 settings from ViciBox (checklist)
+------------------------------------------------
+On 192.168.1.200 (current Asterisk):
+  asterisk -rx "sip show peer gsm222"
+  grep -A 30 '^\[gsm222\]' /etc/asterisk/sip.conf
+  (or pjsip if they moved it)
+
+Write down:
+  host=          (Synway LAN IP)
+  port=
+  username=
+  secret=
+  fromuser / fromdomain
+  context=
+  disallow/allow codecs
+  insecure= / nat=
+  qualify=
+
+Paste the same values onto Ubuntu. Until Ubuntu gsm222 is UNREACHABLE=0
+and a manual test call works, do not cut over production.
+
+
+10. Current office IPs (as of this note)
+----------------------------------------
+  ViciBox / current Asterisk : 192.168.1.200
+  gsm222 Synway              : same LAN (read host= from sip show peer)
+  Ubuntu (new)               : TBD
+  Django today (dev PC)      : Windows, .env already points ARI/AMI at 192.168.1.200
+
+Until Ubuntu is ready, keep TELEPHONY_BACKEND=asterisk against 192.168.1.200.
+
+
+11. Demo logins after seed_demo
+------------------------------
+  All password: ProCaller@2026
+  admin@apinfotech.com           super admin   SIP 2100
+  agency@apinfotech.com          agency
+  manager@apinfotech.com
+  campaign.admin@apinfotech.com
+  agent@apinfotech.com           agent         SIP 2101
+
+
+12. Status of previous server2 copy
+-----------------------------------
+A partial copy of this repo was placed at /opt/procaller_2026 on
+192.168.1.200. Python 3.10 / venv / systemd were NOT finished. That box
+is ViciBox (openSUSE), not Ubuntu. Fresh Ubuntu deploy should start
+clean at /opt/procaller_2026 on the NEW server.
