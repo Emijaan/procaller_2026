@@ -140,7 +140,9 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
             <h2 className="text-xl font-bold text-slate-900">Agencies</h2>
             <p className="text-sm text-slate-500">Create, edit, deactivate, or remove tenants. Limits are enforced on the server.</p>
           </div>
-          {can(user, 'create_agency') && <Button variant="primary" onClick={openCreate}>+ New Agency</Button>}
+          {(can(user, 'create_agency') || user?.is_superuser || (user?.role_normalized || user?.role) === 'super_admin') && (
+            <Button variant="primary" onClick={openCreate}>+ New Agency</Button>
+          )}
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard label="Agencies" value={rows.length} />
@@ -171,8 +173,8 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
                   <p className="text-[10px] text-slate-400">Users</p>
                 </div>
               </div>
-              {can(user, 'manage_agency') && (
-                <div className="flex gap-2">
+              {(can(user, 'manage_agency') || user?.is_superuser || (user?.role_normalized || user?.role) === 'super_admin') && (
+                <div className="flex gap-2 flex-wrap">
                   <Button variant="outline" size="sm" onClick={() => openEdit(org)}>Edit</Button>
                   <Button variant="outline" size="sm" onClick={() => toggleActive(org)}>
                     {org.is_active === false ? 'Activate' : 'Deactivate'}

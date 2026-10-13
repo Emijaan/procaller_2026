@@ -1,6 +1,7 @@
-export function can(user: { permissions?: string[]; role?: string; role_normalized?: string } | null | undefined, code: string) {
+export function can(user: { permissions?: string[]; role?: string; role_normalized?: string; is_superuser?: boolean } | null | undefined, code: string) {
   if (!user) return false;
-  if ((user.role_normalized || user.role) === 'super_admin') return true;
+  const role = user.role_normalized || user.role;
+  if (role === 'super_admin' || user.is_superuser) return true;
   return (user.permissions || []).includes(code);
 }
 

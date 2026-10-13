@@ -38,6 +38,7 @@ export interface User {
   max_admins?: number;
   max_users?: number;
   is_active?: boolean;
+  is_superuser?: boolean;
 }
 
 export interface Campaign {

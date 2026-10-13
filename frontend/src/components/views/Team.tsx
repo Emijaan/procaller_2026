@@ -36,7 +36,13 @@ function roleOptions(actor: User | null) {
   return options;
 }
 
+function isSuperActor(actor: User | null) {
+  if (!actor) return false;
+  return actor.is_superuser === true || (actor.role_normalized || actor.role) === 'super_admin';
+}
+
 function canManagePerson(actor: User | null, person: User) {
+  if (isSuperActor(actor)) return true;
   const role = person.role_normalized || person.role;
   if (role === 'super_admin') return can(actor, 'create_agency');
   if (role === 'agency') return can(actor, 'manage_agency');
@@ -46,6 +52,7 @@ function canManagePerson(actor: User | null, person: User) {
 }
 
 function canAddStaff(actor: User | null) {
+  if (isSuperActor(actor)) return true;
   return can(actor, 'create_user') || can(actor, 'create_admin') || can(actor, 'create_manager') || can(actor, 'create_agency');
 }
 
@@ -61,11 +68,11 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<StaffForm>(emptyForm);
 
-  const isSuper = (user?.role_normalized || user?.role) === 'super_admin';
+  const isSuper = isSuperActor(user);
 
   const load = () => {
     api<User[]>('/api/staff/').then(setRows).catch((err) => showToast(err.message, 'error'));
-    if (can(user, 'manage_agency')) {
+    if (isSuperActor(user) || can(user, 'manage_agency')) {
       api<Organization[]>('/api/agencies/').then(setAgencies).catch(() => undefined);
     }
   };
@@ -213,12 +220,12 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
           <thead className="sticky top-0 bg-[#F8FAFC] border-b border-[#E2E8F0] z-10">
             <tr>
               <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Person</th>
+              <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase whitespace-nowrap">Actions</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Role</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Agency</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Reports to</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Team</th>
               <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase">Status</th>
-              <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Actions</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-[#F1F5F9]">
@@ -233,6 +240,23 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
                     </div>
                   </div>
                 </td>
+                <td className="px-3 py-3.5 whitespace-nowrap">
+                  {canManagePerson(user, person) ? (
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={() => openEdit(person)}>Edit</Button>
+                      {Number(person.id) !== Number(user?.id) && (
+                        <>
+                          <Button variant="outline" size="sm" onClick={() => toggleActive(person)}>
+                            {person.is_active === false ? 'Activate' : 'Deactivate'}
+                          </Button>
+                          <Button variant="danger" size="sm" onClick={() => setConfirm({ person, action: 'delete' })}>Delete</Button>
+                        </>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-slate-400">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-3.5"><Badge>{roleLabel(person.role_normalized || person.role)}</Badge></td>
                 <td className="px-3 py-3.5 text-slate-600">{person.organization?.name || '—'}</td>
                 <td className="px-3 py-3.5 text-slate-600">{person.reports_to_name || '—'}</td>
@@ -241,17 +265,6 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
                   <Badge variant={person.is_active === false ? 'danger' : 'success'}>
                     {person.is_active === false ? 'Inactive' : 'Active'}
                   </Badge>
-                </td>
-                <td className="px-4 py-3.5">
-                  {canManagePerson(user, person) && person.id !== user?.id && (
-                    <div className="flex justify-end gap-1">
-                      <Button variant="ghost" size="sm" onClick={() => openEdit(person)}>Edit</Button>
-                      <Button variant="ghost" size="sm" onClick={() => toggleActive(person)}>
-                        {person.is_active === false ? 'Activate' : 'Deactivate'}
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => setConfirm({ person, action: 'delete' })}>Delete</Button>
-                    </div>
-                  )}
                 </td>
               </tr>
             ))}

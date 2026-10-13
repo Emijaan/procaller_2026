@@ -4,6 +4,8 @@ import { phoneNumbers } from '../../data/mock';
 import { api } from '../../api/client';
 import { can } from '../../api/access';
 import { useAuth } from '../../context/AuthContext';
+import Team from './Team';
+import Agencies from './Agencies';
 
 type AuditRow = {
   id: number;
@@ -55,7 +57,10 @@ export default function Settings({ showToast }: { showToast: (msg: string, type?
       </aside>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className={`flex-1 overflow-hidden ${section === 'users' || section === 'org' ? 'flex flex-col' : 'overflow-y-auto p-6'}`}>
+        {section === 'users' && <Team showToast={showToast} />}
+        {section === 'org' && <Agencies showToast={showToast} />}
+        {section !== 'users' && section !== 'org' && (
         <div className="max-w-2xl mx-auto space-y-6">
 
           {section === 'general' && (
@@ -305,7 +310,7 @@ export default function Settings({ showToast }: { showToast: (msg: string, type?
             </>
           )}
 
-          {!['general','phone','security','billing','audit','developer'].includes(section) && (
+          {!['general','phone','security','billing','audit','developer','users','org'].includes(section) && (
             <div className="text-center py-20">
               <div className="text-4xl mb-3">{settingsNav.find(n => n.id === section)?.icon}</div>
               <p className="text-sm font-semibold text-slate-700">{settingsNav.find(n => n.id === section)?.label}</p>
@@ -314,6 +319,7 @@ export default function Settings({ showToast }: { showToast: (msg: string, type?
           )}
 
         </div>
+        )}
       </div>
     </div>
   );

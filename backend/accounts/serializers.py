@@ -60,6 +60,7 @@ class UserSerializer(serializers.ModelSerializer):
             "max_admins",
             "max_users",
             "is_active",
+            "is_superuser",
         )
 
     def get_permissions(self, obj):

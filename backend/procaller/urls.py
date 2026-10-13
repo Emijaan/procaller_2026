@@ -4,7 +4,9 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.http import JsonResponse
-from django.urls import include, path
+from django.urls import include, path, re_path
+
+from .spa import spa
 
 admin.site.site_header = "ProCaller Admin"
 admin.site.site_title = "ProCaller"
@@ -27,3 +29,7 @@ urlpatterns = [
 
 if settings.DEBUG or os.getenv("SERVE_MEDIA", "1") == "1":
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+urlpatterns += [
+    re_path(r"^(?P<path>.*)$", spa),
+]
