@@ -170,6 +170,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   }), [phone.stopRingtone]);
 
   const incomingRef = useRef(false);
+  const inboundLiveRef = useRef(false);
   const endCallRef = useRef<() => void>(() => undefined);
   useEffect(() => onPhoneHangup(() => {
     if (endingRef.current) return;
@@ -351,7 +352,11 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
     callIdRef.current = call.id;
     setCurrentContact(contactFromCall(call));
     if (call.state === 'initiating' || call.state === 'ringing' || call.state === 'connected' || call.state === 'on_hold' || call.state === 'ended') {
-      setCallState((current) => (current === 'incoming' ? current : call.state));
+      setCallState((current) => {
+        if (current === 'incoming') return current;
+        if (inboundLiveRef.current && (call.state === 'initiating' || call.state === 'ringing')) return current;
+        return call.state;
+      });
     }
     if (call.state === 'connected' || call.state === 'on_hold') {
       phone.stopRingtone();
@@ -625,11 +630,14 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
 
   const answerCallback = async () => {
     incomingRef.current = false;
+    inboundLiveRef.current = true;
     phone.stopRingtone();
+    setCallState('connected');
     try {
       await answerIncoming();
       setCallState('connected');
     } catch {
+      inboundLiveRef.current = false;
       setCallState('idle');
       showToast('Could not answer the call', 'error');
     }
@@ -637,6 +645,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
 
   const declineCallback = () => {
     incomingRef.current = false;
+    inboundLiveRef.current = false;
     phone.stopRingtone();
     declineIncoming();
     setCallState('idle');
@@ -644,6 +653,7 @@ export default function Dialer({ showToast }: { showToast: (msg: string, type?: 
   };
 
   const endCall = async () => {
+    inboundLiveRef.current = false;
     const ids = Array.from(new Set([callIdRef.current, ...liveCallsRef.current.map((row) => row.id)].filter(Boolean))) as number[];
     endingRef.current = true;
     phone.stopRingtone();
