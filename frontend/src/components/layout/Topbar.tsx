@@ -21,7 +21,7 @@ const viewTitles: Record<string, { title: string; subtitle: string }> = {
   followups: { title: 'Follow-ups', subtitle: 'Scheduled follow-ups' },
   analytics: { title: 'Analytics', subtitle: 'Performance analytics' },
   team: { title: 'Team', subtitle: 'Agent management' },
-  reports: { title: 'Reports', subtitle: 'Daily agent and campaign reports' },
+  reports: { title: 'Reports', subtitle: 'Filter and download agent, IVR, and uploaded-file reports' },
   phone_numbers: { title: 'Phone Numbers', subtitle: 'Number management' },
   ivr: { title: 'IVR & Call Flows', subtitle: 'Configure routing' },
   integrations: { title: 'Integrations', subtitle: 'Connected services' },

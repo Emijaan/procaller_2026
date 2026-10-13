@@ -434,6 +434,163 @@ class PreviewAutoDialerTests(TestCase):
         self.assertEqual(len(one), 1)
 
 
+    def test_report_filters_download_ivr_and_uploaded_files(self):
+        import csv
+        from io import StringIO
+
+        from crm.models import ImportJob
+
+        job = ImportJob.objects.create(
+            agency=self.org,
+            campaign=self.camp,
+            created_by=self.agency,
+            file_name="leads.xlsx",
+            status=ImportJob.Status.DONE,
+            imported_rows=3,
+        )
+        self.lead.import_job = job
+        self.lead.save(update_fields=["import_job"])
+        self.lead2.import_job = job
+        self.lead2.save(update_fields=["import_job"])
+        quiet = Contact.objects.create(
+            name="Never",
+            phone="9333333333",
+            agency=self.org,
+            campaign=self.camp,
+            import_job=job,
+            lead_status=Contact.LeadStatus.NEW,
+        )
+        Call.objects.create(
+            agent=self.agent1,
+            contact=self.lead,
+            campaign=self.camp,
+            phone_number=self.lead.phone,
+            callerid_token="sw",
+            state=Call.State.ENDED,
+            disposition="Switch Off",
+            outcome="Switch Off",
+        )
+        Call.objects.create(
+            agent=self.agent1,
+            contact=self.lead2,
+            campaign=self.camp,
+            phone_number=self.lead2.phone,
+            callerid_token="busy",
+            state=Call.State.ENDED,
+            disposition="BUSY",
+            outcome="BUSY",
+        )
+        ibr = Campaign.objects.create(
+            name="IBR A",
+            agency=self.org,
+            created_by=self.agency,
+            campaign_type=Campaign.CampaignType.IBR,
+            status=Campaign.Status.ACTIVE,
+            active=True,
+        )
+        ibr_job = ImportJob.objects.create(
+            agency=self.org,
+            campaign=ibr,
+            created_by=self.agency,
+            file_name="ibr.csv",
+            status=ImportJob.Status.DONE,
+            imported_rows=2,
+        )
+        switched = Contact.objects.create(
+            name="Asha",
+            phone="9111111111",
+            agency=self.org,
+            campaign=ibr,
+            import_job=ibr_job,
+            extra_data={"city": "Pune"},
+            lead_status=Contact.LeadStatus.NEW,
+        )
+        answered = Contact.objects.create(
+            name="Ravi",
+            phone="9222222222",
+            agency=self.org,
+            campaign=ibr,
+            import_job=ibr_job,
+            lead_status=Contact.LeadStatus.NEW,
+        )
+        Call.objects.create(
+            agent=self.agency,
+            contact=switched,
+            campaign=ibr,
+            phone_number=switched.phone,
+            callerid_token="ibr-sw",
+            state=Call.State.ENDED,
+            disposition="SWITCHED_OFF",
+            outcome="SWITCHED_OFF",
+        )
+        Call.objects.create(
+            agent=self.agency,
+            contact=answered,
+            campaign=ibr,
+            phone_number=answered.phone,
+            callerid_token="ibr-ok",
+            state=Call.State.ENDED,
+            disposition="CONNECTED",
+            outcome="CONNECTED",
+            answered_at=timezone.now(),
+        )
+
+        client = self._login("agency@a.com")
+        options = client.get("/api/reports/filters/")
+        self.assertEqual(options.status_code, 200)
+        self.assertIn("SWITCHED_OFF", options.data["dispositions"])
+        self.assertIn("NOT_DIALED", options.data["dispositions"])
+        self.assertIn(job.id, [row["id"] for row in options.data["files"]])
+
+        other = self._login("agency@b.com")
+        hidden = other.get(f"/api/reports/export/?kind=leads&file=csv&import_job={job.id}&dates=all")
+        self.assertEqual(hidden.status_code, 404)
+
+        client = self._login("agency@a.com")
+        one = client.get(
+            f"/api/reports/export/?kind=leads&file=csv&import_job={job.id}&campaign={self.camp.id}&disposition=SWITCHED_OFF&dates=all"
+        )
+        self.assertEqual(one.status_code, 200, one.content)
+        rows = list(csv.DictReader(StringIO(one.content.decode())))
+        self.assertEqual([row["phone"] for row in rows], [self.lead.phone])
+        self.assertEqual(rows[0]["disposition"], "SWITCHED_OFF")
+        self.assertEqual(rows[0]["import_file"], "leads.xlsx")
+
+        both = client.get(
+            f"/api/reports/export/?kind=leads&file=csv&import_job={job.id}&disposition=SWITCHED_OFF,BUSY&dates=all"
+        )
+        phones = {row["phone"] for row in csv.DictReader(StringIO(both.content.decode()))}
+        self.assertEqual(phones, {self.lead.phone, self.lead2.phone})
+
+        waiting = client.get(f"/api/reports/export/?kind=leads&file=csv&import_job={job.id}&disposition=NOT_DIALED&dates=all")
+        waiting_rows = list(csv.DictReader(StringIO(waiting.content.decode())))
+        self.assertEqual([row["phone"] for row in waiting_rows], [quiet.phone])
+        self.assertEqual(waiting_rows[0]["disposition"], "NOT_DIALED")
+
+        ibr_csv = client.get(
+            f"/api/reports/export/?kind=ibr&file=csv&campaign={ibr.id}&import_job={ibr_job.id}&disposition=SWITCHED_OFF&dates=all"
+        )
+        self.assertEqual(ibr_csv.status_code, 200, ibr_csv.content)
+        ibr_rows = list(csv.DictReader(StringIO(ibr_csv.content.decode())))
+        self.assertEqual(len(ibr_rows), 1)
+        self.assertEqual(ibr_rows[0]["phone"], switched.phone)
+        self.assertEqual(ibr_rows[0]["disposition"], "SWITCHED_OFF")
+        self.assertEqual(ibr_rows[0]["city"], "Pune")
+        self.assertEqual(ibr_rows[0]["import_file"], "ibr.csv")
+
+        calls = client.get(f"/api/reports/calls/?disposition=SWITCHED_OFF&campaign={ibr.id}&user={self.agency.id}&dates=all")
+        self.assertEqual(calls.status_code, 200)
+        self.assertEqual(calls.data["total"], 1)
+        self.assertEqual(calls.data["calls"][0]["disposition"], "SWITCHED_OFF")
+
+        wrong_agent = client.get(f"/api/reports/export/?kind=calls&file=csv&disposition=BUSY&user={self.agent2.id}&dates=all")
+        self.assertEqual(list(csv.DictReader(StringIO(wrong_agent.content.decode()))), [])
+
+        user = self._login("u1@a.com")
+        self.assertEqual(user.get("/api/reports/export/?kind=ibr&file=csv&dates=all").status_code, 403)
+
+
+
 @override_settings(TELEPHONY_BACKEND="sandbox")
 class SipProvisionTests(TestCase):
     def test_users_without_extension_get_a_free_21xx(self):

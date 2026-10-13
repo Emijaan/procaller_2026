@@ -156,6 +156,11 @@ def _result(code):
     return (code, code, code)
 
 
+def disposition_codes():
+    """Every disposition code a report filter can select."""
+    return sorted(_SENTENCE)
+
+
 def announcement(code):
     mapped = canonical_code(code)
     return _SENTENCE.get(mapped, "")
