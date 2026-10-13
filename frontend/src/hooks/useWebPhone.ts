@@ -1,11 +1,11 @@
 import { useCallback, useRef } from 'react';
-import { Inviter, Registerer, SessionState, UserAgent } from 'sip.js';
+import { Invitation, Inviter, Registerer, Session, SessionState, UserAgent } from 'sip.js';
 import type { TelephonySession } from '../api/types';
 
 type SipBundle = {
   ua: UserAgent;
   registerer: Registerer;
-  conference: Inviter | null;
+  conference: Session | null;
   audio: HTMLAudioElement;
   local?: MediaStream;
 };
@@ -20,6 +20,105 @@ export type CallListeners = {
 let shared: SipBundle | null = null;
 let owners = 0;
 let stopTimer: ReturnType<typeof setTimeout> | null = null;
+const incomingHandlers = new Set<(from: string) => void>();
+const incomingEndedHandlers = new Set<() => void>();
+const phoneHangupHandlers = new Set<() => void>();
+let pendingIncoming: Invitation | null = null;
+let ringCtx: AudioContext | null = null;
+let ringLoop: ReturnType<typeof setInterval> | null = null;
+let ringTimers: number[] = [];
+let ringNodes: OscillatorNode[] = [];
+let ringRequested = false;
+let ringPrimed = false;
+
+function ensureRingContext() {
+  if (!ringCtx || ringCtx.state === 'closed') ringCtx = new AudioContext();
+  return ringCtx;
+}
+
+function silenceRing() {
+  if (ringLoop) {
+    clearInterval(ringLoop);
+    ringLoop = null;
+  }
+  ringTimers.forEach((id) => window.clearTimeout(id));
+  ringTimers = [];
+  ringNodes.forEach((node) => { try { node.stop(); } catch { /* ignore */ } });
+  ringNodes = [];
+}
+
+function startIncomingRing() {
+  ringRequested = true;
+  silenceRing();
+  const ctx = ensureRingContext();
+  const play = () => {
+    if (!ringRequested || ringCtx !== ctx || ctx.state !== 'running') return;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.28;
+    gain.connect(ctx.destination);
+    const pulse = (delay: number) => {
+      const id = window.setTimeout(() => {
+        if (!ringRequested || ringCtx !== ctx) return;
+        const low = ctx.createOscillator();
+        const high = ctx.createOscillator();
+        low.type = 'sine';
+        high.type = 'sine';
+        low.frequency.value = 440;
+        high.frequency.value = 480;
+        low.connect(gain);
+        high.connect(gain);
+        low.start();
+        high.start();
+        ringNodes.push(low, high);
+        ringTimers.push(window.setTimeout(() => {
+          try { low.stop(); high.stop(); } catch { /* ignore */ }
+        }, 400));
+      }, delay);
+      ringTimers.push(id);
+    };
+    const cycle = () => {
+      pulse(0);
+      pulse(550);
+    };
+    cycle();
+    ringLoop = window.setInterval(cycle, 2800);
+  };
+  ctx.resume().then(play).catch(() => undefined);
+}
+
+function stopIncomingRing() {
+  ringRequested = false;
+  silenceRing();
+}
+
+function primeRingtone() {
+  const ctx = ensureRingContext();
+  ctx.resume().catch(() => undefined);
+  if (ringPrimed || typeof window === 'undefined') return;
+  ringPrimed = true;
+  const unlock = () => {
+    ctx.resume().then(() => {
+      if (ringRequested && !ringLoop) startIncomingRing();
+    }).catch(() => undefined);
+  };
+  window.addEventListener('pointerdown', unlock);
+  window.addEventListener('keydown', unlock);
+}
+
+export function onIncomingCall(handler: (from: string) => void) {
+  incomingHandlers.add(handler);
+  return () => incomingHandlers.delete(handler);
+}
+
+export function onIncomingEnded(handler: () => void) {
+  incomingEndedHandlers.add(handler);
+  return () => incomingEndedHandlers.delete(handler);
+}
+
+export function onPhoneHangup(handler: () => void) {
+  phoneHangupHandlers.add(handler);
+  return () => phoneHangupHandlers.delete(handler);
+}
 
 type HoldMix = {
   ctx: AudioContext | null;
@@ -60,7 +159,7 @@ function ensureAudioEl() {
   return el;
 }
 
-function attachRemote(session: Inviter) {
+function attachRemote(session: Session) {
   const handler = session.sessionDescriptionHandler as { peerConnection?: RTCPeerConnection } | undefined;
   const pc = handler?.peerConnection;
   if (!pc) return;
@@ -100,7 +199,7 @@ function pickRecorderMime() {
   return types.find((t) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) || '';
 }
 
-function feedRecorder(session: Inviter) {
+function feedRecorder(session: Session) {
   if (!recMix.ctx || !recMix.dest) return;
   const handler = session.sessionDescriptionHandler as { peerConnection?: RTCPeerConnection } | undefined;
   const pc = handler?.peerConnection;
@@ -182,20 +281,82 @@ function finishCallRecording(): Promise<Blob | null> {
   });
 }
 
-function hangupInviter(inviter: Inviter | null) {
-  if (!inviter || inviter.state === SessionState.Terminated) return;
-  if (inviter.state === SessionState.Established) {
-    try { inviter.bye(); } catch { /* ignore */ }
+function hangupInviter(session: Session | null) {
+  if (!session || session.state === SessionState.Terminated) return;
+  if (session.state === SessionState.Established) {
+    try { session.bye(); } catch { /* ignore */ }
     return;
   }
-  try { inviter.cancel(); } catch { /* ignore */ }
+  if (session instanceof Invitation) {
+    try { session.reject(); } catch { /* ignore */ }
+    return;
+  }
+  if (session instanceof Inviter) {
+    try { session.cancel(); } catch { /* ignore */ }
+  }
+}
+
+function rejectPending(statusCode: number) {
+  stopIncomingRing();
+  const invitation = pendingIncoming;
+  if (!invitation || invitation.state === SessionState.Terminated) {
+    pendingIncoming = null;
+    return;
+  }
+  pendingIncoming = null;
+  invitation.reject({ statusCode }).catch(() => undefined);
+}
+
+function offerIncoming(invitation: Invitation) {
+  const lineBusy = (shared?.conference && shared.conference.state !== SessionState.Terminated)
+    || (pendingIncoming && pendingIncoming.state !== SessionState.Terminated);
+  if (lineBusy) {
+    invitation.reject({ statusCode: 486 }).catch(() => undefined);
+    return;
+  }
+  pendingIncoming = invitation;
+  const from = invitation.remoteIdentity?.uri?.user || 'callback';
+  invitation.stateChange.addListener((state) => {
+    if (state === SessionState.Terminated && pendingIncoming === invitation) {
+      pendingIncoming = null;
+      stopIncomingRing();
+      incomingEndedHandlers.forEach((handler) => handler());
+    }
+  });
+  invitation.progress({ statusCode: 180 }).catch(() => undefined);
+  startIncomingRing();
+  incomingHandlers.forEach((handler) => handler(from));
+}
+
+export async function answerIncoming() {
+  stopIncomingRing();
+  const invitation = pendingIncoming;
+  if (!invitation || invitation.state === SessionState.Terminated) return;
+  pendingIncoming = null;
+  if (shared) shared.conference = invitation;
+  beginCallRecording();
+  invitation.stateChange.addListener((state) => {
+    if (state === SessionState.Establishing || state === SessionState.Established) {
+      attachRemote(invitation);
+      includeAgentInRecording();
+    }
+    if (state === SessionState.Terminated) {
+      if (shared?.conference === invitation) shared.conference = null;
+      phoneHangupHandlers.forEach((handler) => handler());
+    }
+  });
+  await invitation.accept({
+    sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } },
+  });
+}
+
+export function declineIncoming() {
+  rejectPending(603);
 }
 
 export function useWebPhone() {
   const pcLocal = useRef<RTCPeerConnection | null>(null);
   const pcRemote = useRef<RTCPeerConnection | null>(null);
-  const ringtone = useRef<AudioContext | null>(null);
-  const oscillators = useRef<OscillatorNode[]>([]);
   const sipMode = useRef(false);
 
   const startMic = useCallback(async () => {
@@ -209,43 +370,12 @@ export function useWebPhone() {
   }, []);
 
   const playRingtone = useCallback(async () => {
-    oscillators.current.forEach((o) => { try { o.stop(); } catch { /* ignore */ } });
-    ringtone.current?.close();
-    const ctx = new AudioContext();
-    await ctx.resume().catch(() => undefined);
-    ringtone.current = ctx;
-    const gain = ctx.createGain();
-    gain.gain.value = 0.07;
-    gain.connect(ctx.destination);
-    const playBurst = () => {
-      if (ringtone.current !== ctx) return;
-      const osc1 = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
-      osc1.type = 'sine';
-      osc2.type = 'sine';
-      osc1.frequency.value = 440;
-      osc2.frequency.value = 480;
-      osc1.connect(gain);
-      osc2.connect(gain);
-      osc1.start();
-      osc2.start();
-      oscillators.current = [osc1, osc2];
-      setTimeout(() => {
-        try { osc1.stop(); osc2.stop(); } catch { /* ignore */ }
-      }, 400);
-    };
-    playBurst();
-    const pulse = window.setInterval(playBurst, 1200);
-    (ctx as AudioContext & { _pulse?: number })._pulse = pulse;
+    primeRingtone();
+    startIncomingRing();
   }, []);
 
   const stopRingtone = useCallback(() => {
-    oscillators.current.forEach((o) => { try { o.stop(); } catch { /* ignore */ } });
-    oscillators.current = [];
-    const ctx = ringtone.current as (AudioContext & { _pulse?: number }) | null;
-    if (ctx?._pulse) window.clearInterval(ctx._pulse);
-    ctx?.close();
-    ringtone.current = null;
+    stopIncomingRing();
   }, []);
 
   const startLoopback = useCallback(async (iceServers: RTCIceServer[]) => {
@@ -288,6 +418,7 @@ export function useWebPhone() {
     }
     if (shared?.ua) return;
     const stream = await startMic();
+    primeRingtone();
     const uri = UserAgent.makeURI(sip.uri);
     if (!uri) throw new Error('Invalid SIP URI');
     const username = sip.uri.split(':')[1]?.split('@')[0] || '';
@@ -297,6 +428,7 @@ export function useWebPhone() {
       authorizationPassword: sip.password,
       displayName: sip.display_name,
       transportOptions: { server: sip.ws_url },
+      delegate: { onInvite: offerIncoming },
       sessionDescriptionHandlerFactoryOptions: {
         constraints: { audio: true, video: false },
         peerConnectionConfiguration: {
@@ -317,6 +449,7 @@ export function useWebPhone() {
   ) => {
     if (!shared?.ua) await connectSip(sip);
     if (!shared?.ua) throw new Error('Web phone is not registered');
+    rejectPending(486);
     hangupInviter(shared.conference);
     if (shared) shared.conference = null;
     const domain = sip.uri.split('@')[1] || '';
@@ -365,6 +498,7 @@ export function useWebPhone() {
 
   const hangupCall = useCallback(() => {
     stopHoldMix().catch(() => undefined);
+    rejectPending(603);
     hangupInviter(shared?.conference || null);
     if (shared) shared.conference = null;
   }, []);
@@ -454,6 +588,7 @@ export function useWebPhone() {
     stopRingtone();
     stopLoopback();
     stopHoldMix().catch(() => undefined);
+    rejectPending(603);
     hangupInviter(shared?.conference || null);
     try { shared?.registerer.unregister(); } catch { /* ignore */ }
     try { shared?.ua.stop(); } catch { /* ignore */ }
@@ -491,7 +626,9 @@ export function forceStopPhone() {
     clearTimeout(stopTimer);
     stopTimer = null;
   }
+  stopIncomingRing();
   stopHoldMix().catch(() => undefined);
+  rejectPending(603);
   hangupInviter(shared?.conference || null);
   try { shared?.registerer.unregister(); } catch { /* ignore */ }
   try { shared?.ua.stop(); } catch { /* ignore */ }
