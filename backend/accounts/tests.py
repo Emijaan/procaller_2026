@@ -189,6 +189,39 @@ class TenantIsolationTests(TestCase):
         user = User.objects.get(pk=created.data["id"])
         self.assertTrue(self.camp_a.assigned_users.filter(pk=user.id).exists())
 
+    def test_agency_can_create_edit_and_delete_users_on_its_own_line(self):
+        client = self._login("a@test.com")
+        created = client.post(
+            "/api/staff/",
+            {"email": "line-user@a.com", "password": "x", "role": "user", "campaign": self.camp_a.id},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        org = created.data["organization"]
+        self.assertEqual(org["id"] if isinstance(org, dict) else org, self.a.id)
+        pk = created.data["id"]
+        edited = client.patch(f"/api/staff/{pk}/", {"first_name": "Line"}, format="json")
+        self.assertEqual(edited.status_code, 200, edited.data)
+        self.assertEqual(edited.data["first_name"], "Line")
+        other = client.patch(f"/api/staff/{self.agency_b.id}/", {"first_name": "Nope"}, format="json")
+        self.assertEqual(other.status_code, 404)
+        planted = client.post(
+            "/api/staff/",
+            {
+                "email": "line-user@b.com",
+                "password": "x",
+                "role": "user",
+                "organization": self.b.id,
+                "campaign": self.camp_b.id,
+            },
+            format="json",
+        )
+        self.assertEqual(planted.status_code, 403)
+        self.assertFalse(User.objects.filter(email="line-user@b.com").exists())
+        removed = client.delete(f"/api/staff/{pk}/")
+        self.assertEqual(removed.status_code, 200, removed.data)
+        self.assertFalse(User.objects.filter(pk=pk).exists())
+
     def test_agency_cannot_cross_into_another_agency_by_id(self):
         from telephony.models import Call
 
