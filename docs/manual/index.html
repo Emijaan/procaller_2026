@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ProCaller User Manual</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; background: #f1f5f9; color: #0f172a; font: 16px/1.55 "Segoe UI", sans-serif; }
+    main { max-width: 980px; margin: 0 auto; padding: 40px 24px 80px; }
+    header.cover { background: #0f172a; color: #fff; border-radius: 16px; padding: 36px 40px; }
+    header.cover p { color: #cbd5e1; margin: 8px 0 0; }
+    h1 { margin: 0; font-size: 2rem; }
+    h2 { margin: 2.2rem 0 0.6rem; font-size: 1.35rem; }
+    h3 { margin: 1.4rem 0 0.4rem; font-size: 1.05rem; }
+    figure { margin: 16px 0 8px; background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
+    img { display: block; width: 100%; height: auto; }
+    figcaption { padding: 10px 14px 12px; color: #475569; font-size: 0.92rem; }
+    table { width: 100%; border-collapse: collapse; background: #fff; margin: 12px 0 18px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    th { background: #f8fafc; }
+    ol, ul { padding-left: 1.2rem; }
+    li { margin: 0.25rem 0; }
+    .note { background: #eef2ff; border-left: 4px solid #4f46e5; padding: 10px 14px; border-radius: 8px; }
+    a { color: #4338ca; }
+    @media print {
+      body { background: #fff; }
+      main { max-width: none; }
+      header.cover { break-after: avoid; }
+      figure { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header class="cover">
+    <h1>ProCaller User Manual</h1>
+    <p>AP Infotech and Cyber Solution</p>
+    <p>Manual dialing, campaigns, inbound calls, and reports on one agent phone. Pictures below are the live ProCaller screens, taken 15 October 2026 while signed in as Super Admin.</p>
+  </header>
+
+  <h2>1. Sign in</h2>
+  <figure>
+    <img src="images/01-login.png" alt="ProCaller sign-in page" />
+    <figcaption>Sign-in page. Use the work email and password created for you.</figcaption>
+  </figure>
+  <ol>
+    <li>Open ProCaller in the browser.</li>
+    <li>Enter your work email and password, then choose <strong>Sign In</strong>.</li>
+    <li>Allow the microphone when the browser asks. The dialer uses the headset in this browser.</li>
+  </ol>
+  <p>Each person sees only their own agency. A user sees the campaigns assigned to them. Sign out on a shared computer.</p>
+
+  <h2>2. Who does what</h2>
+  <table>
+    <tr><th>Role</th><th>What they do</th></tr>
+    <tr><td>Super Admin</td><td>Creates agencies, sets seat limits, and turns IVR voice campaigns on for an agency. Sees every agency.</td></tr>
+    <tr><td>Agency</td><td>Runs one company. Creates managers, admins, and users on that line. Uploads leads, sets threads, sees calls, and can log a lower user out.</td></tr>
+    <tr><td>Manager</td><td>Creates admins and users under their team. Manages campaigns, lead files, and reports for that team.</td></tr>
+    <tr><td>Admin</td><td>Creates and edits campaigns, uploads lead files, and works reports. An admin does not create user accounts.</td></tr>
+    <tr><td>User</td><td>Places manual calls and works Preview Auto on the campaigns assigned at creation. A user cannot change thread counts, and cannot turn lead files off or delete leads.</td></tr>
+  </table>
+  <p>A PC number and an extension are attached the first time an account is created. They stay with that person. The Team page shows both.</p>
+
+  <h2>3. The menu</h2>
+  <p>The left menu opens each working screen: Dashboard, Live Operations, Dialer, Contacts, Leads, Campaigns, Calls, Recordings, Team, Reports, and Agencies (Super Admin). Day-to-day work lives on those screens.</p>
+  <p class="note">The hourly chart on the Dashboard, the Analytics page, Call Queue, and Follow-ups still draw sample pictures. Live figures are the count cards, Live Operations, Calls, Recordings, Leads, and Reports.</p>
+
+  <h2>4. Dashboard</h2>
+  <figure>
+    <img src="images/02-dashboard.png" alt="Dashboard with live count cards" />
+    <figcaption>Dashboard for Super Admin. The count cards are live. The chart and ring under them are sample artwork.</figcaption>
+  </figure>
+  <p>The cards across the top show today’s calls, connected calls, leads, users against the seat limit, campaigns, and how many people are online, in Preview Auto, in Manual, or on Break. <strong>Make First Call</strong> opens the dialer.</p>
+
+  <h2>5. Live Operations</h2>
+  <figure>
+    <img src="images/03-live-operations.png" alt="Live Operations agent grid" />
+    <figcaption>Live floor. This view refreshes about every 5 seconds.</figcaption>
+  </figure>
+  <p>Available, On Call, Wrap-up, Break, and Offline update as people change mode. Each card shows the mode, calls today, and the campaign. <strong>Logout</strong> ends that person’s session. An agency sees its own line. Super Admin sees every line.</p>
+
+  <h2>6. Dialer</h2>
+  <h3>Manual</h3>
+  <figure>
+    <img src="images/04-dialer.png" alt="Manual dialer with keypad" />
+    <figcaption>Manual mode. The keypad is in the center. The campaign is chosen at the top.</figcaption>
+  </figure>
+  <ol>
+    <li>Choose <strong>Manual</strong>.</li>
+    <li>Choose the campaign.</li>
+    <li>Type or paste the number. The prefix +91 is already shown.</li>
+    <li>Press <strong>Call</strong>.</li>
+  </ol>
+  <p>The screen stays on Ringing until the customer’s phone is actually answered, then it shows Connected. An inbound call rings the computer and offers <strong>Answer</strong> or <strong>Hang up</strong>. Connected appears after the customer side is answered.</p>
+  <p>Backspace deletes a digit. Holding backspace clears the number. A double tap on Call redials.</p>
+
+  <h3>Preview Auto</h3>
+  <figure>
+    <img src="images/04b-dialer-preview.png" alt="Preview Auto waiting for the next lead" />
+    <figcaption>Preview Auto. The lead fills the center. Dialpad opens the keypad.</figcaption>
+  </figure>
+  <ol>
+    <li>Choose <strong>Preview Auto</strong> and the campaign.</li>
+    <li>The next lead’s name, number, and extra columns appear in the center.</li>
+    <li><strong>Dialpad</strong> shows the keypad. <strong>Hide dialpad</strong> returns to the lead.</li>
+    <li><strong>Skip</strong> moves to another lead.</li>
+    <li><strong>Break</strong> pauses auto dialing.</li>
+  </ol>
+  <p>The thread count belongs to the campaign. It is how many Preview Auto users can be on a live call for that campaign at the same time. A user cannot change it. Staff who can edit the campaign set it on the campaign card, from 1 to 32.</p>
+
+  <h2>7. Campaigns</h2>
+  <figure>
+    <img src="images/07-campaigns.png" alt="Campaign card with threads and upload" />
+    <figcaption>The OUTBOUND campaign card: strategy, threads, upload, users, and hold audio.</figcaption>
+  </figure>
+  <ol>
+    <li>Open <strong>Campaigns</strong> and choose <strong>New Campaign</strong>.</li>
+    <li>On the card, set <strong>Threads</strong> (1–32) before auto dialing.</li>
+    <li><strong>Assign users</strong> chooses who may work the list. A user account is also tied to a campaign when the account is created.</li>
+    <li><strong>Upload Excel</strong> after the campaign exists. The file must have a mobile column. Every other column, including blanks, is stored on that lead. The same mobile number is one lead inside a campaign.</li>
+    <li><strong>Start auto</strong> lets seated Preview Auto users take leads, one live call each, up to the thread count.</li>
+    <li><strong>Pause</strong> stops new auto calls. <strong>Leads</strong> opens the list on that campaign. <strong>Hold MP3</strong> is the audio played on hold, up to 5 MB. With no file, a default tone plays.</li>
+  </ol>
+
+  <h2>8. Leads and contacts</h2>
+  <figure>
+    <img src="images/06-leads.png" alt="Leads page with uploaded files and disposition columns" />
+    <figcaption>Leads. Uploaded files sit at the top. Each row has status, disposition, and code.</figcaption>
+  </figure>
+  <ul>
+    <li>Super Admin sees every agency. Agency, manager, and admin see every lead in their own agency. A user sees leads they own or leads on their assigned campaigns.</li>
+    <li>Click an uploaded file to open its leads. A lead that has never been dialed shows <strong>Not dialed</strong>.</li>
+    <li><strong>Deactivate</strong> on a file sets those leads inactive so Preview Auto skips them. Each lead also has Off / On.</li>
+    <li><strong>Delete</strong> on a lead removes that lead and keeps the call history. Delete on a file removes its leads and, once none are left on a live call, removes the file name. A lead that is on a live call stays until that call ends.</li>
+    <li>A user cannot deactivate or delete leads.</li>
+  </ul>
+  <figure>
+    <img src="images/05-contacts.png" alt="Contacts page" />
+    <figcaption>Contacts. Search, filter, import, export, or add a person.</figcaption>
+  </figure>
+
+  <h2>9. Calls and recordings</h2>
+  <figure>
+    <img src="images/08-calls.png" alt="Call history" />
+    <figcaption>Calls. Filter by direction and status, then export CSV.</figcaption>
+  </figure>
+  <figure>
+    <img src="images/09-recordings.png" alt="Recordings list with listen and download" />
+    <figcaption>Recordings. Listen on the page or download a ZIP of the selected files.</figcaption>
+  </figure>
+  <p>A user plays their own recordings. An agency plays recordings on its own line. Super Admin can filter every agency. Downloads require a signed-in account.</p>
+
+  <h2>10. Reports</h2>
+  <figure>
+    <img src="images/13-reports.png" alt="Reports filters, disposition codes, and downloads" />
+    <figcaption>Reports. Every filter applies together. Downloads use the same filters.</figcaption>
+  </figure>
+  <p>Set any mix of dates, agency, role, user, campaign, uploaded file, phone, call status, and disposition codes. Then download:</p>
+  <ul>
+    <li><strong>Agent CSV</strong> or <strong>Agent Excel</strong> — time online, preview, break, calls, and talk.</li>
+    <li><strong>Campaign Excel</strong> — results by campaign.</li>
+    <li><strong>Calls CSV</strong> — every matching attempt.</li>
+    <li><strong>IVR CSV</strong> — matching voice-campaign attempts. Hidden for a user.</li>
+    <li><strong>Uploaded file CSV</strong> — one row per lead. A lead with no call is <code>NOT_DIALED</code>. Extra spreadsheet columns are included.</li>
+  </ul>
+  <p><strong>All dates</strong> clears the day limit. <strong>Reset</strong> returns the range to today. The date boxes start on today.</p>
+  <p><code>CONNECTED</code> is stored only after the customer answered. While a call is still going out the code is <code>DIALING</code>. A network message that cannot be matched is <code>UNKNOWN_UNCLASSIFIED</code>. A Hindi announcement that is not in the list is <code>UNKNOWN_ANNOUNCEMENT_HI</code>. The checkboxes on this page are the full code list, including the Hindi codes that end in <code>_HI</code>, such as switched off, busy, not reachable, invalid number, incoming barred, call failed, and do not disturb.</p>
+
+  <h2>11. Team</h2>
+  <figure>
+    <img src="images/12-team.png" alt="Team list with PC number and extension" />
+    <figcaption>Team. PC number and extension are fixed on the account. Campaigns shows what that user may dial.</figcaption>
+  </figure>
+  <ol>
+    <li><strong>Add account</strong> creates a manager, admin, or user that your role is allowed to create.</li>
+    <li>An agency creates people only inside its own company. Creating a user requires a campaign in that agency.</li>
+    <li>Edit, deactivate, or delete from the row. Deactivate keeps the history and stops the login.</li>
+  </ol>
+
+  <h2>12. Agencies</h2>
+  <figure>
+    <img src="images/14-agencies.png" alt="Agency cards with seat limits and IBR" />
+    <figcaption>Agencies. Super Admin sets manager, admin, and user limits. IBR marks an agency that may run voice campaigns.</figcaption>
+  </figure>
+  <p><strong>New Agency</strong> adds a company and its seat limits. Edit, deactivate, or delete from the card. Limits are enforced when accounts are created.</p>
+
+  <h2>13. IVR voice campaigns</h2>
+  <p>Super Admin turns IBR on for an agency. A manager, agency, or admin then approves a file on an IVR campaign. ProCaller builds one voice message per number from that row. The campaign thread count is how many of those calls run at the same time. When the customer answers, that number’s message plays and the line hangs up. Download the result with <strong>IVR CSV</strong> on Reports. The same automatic disposition codes are stored. The voice used for these messages is English.</p>
+
+  <h2>14. A normal day</h2>
+  <ol>
+    <li>Super Admin creates the agency and, if needed, turns on IBR.</li>
+    <li>The agency creates managers, admins, and users, each user on a campaign.</li>
+    <li>Staff upload the Excel file on that campaign and set threads to match how many agents will sit in Preview Auto.</li>
+    <li>Agents sign in, allow the microphone, choose Preview Auto, and work the lead in the center of the dialer.</li>
+    <li>Supervisors watch Live Operations. Reports and the lead file show Not dialed, the IVR code, or Connected.</li>
+  </ol>
+
+  <p>© 2026 AP Infotech and Cyber Solution. ProCaller.</p>
+</main>
+</body>
+</html>

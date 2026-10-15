@@ -1,272 +1,140 @@
 # ProCaller User Manual
 
-**AP Infotech and Cyber Solution**  
-Multi-tenant call center dialer, CRM, and campaign management — with browser WebRTC calling and Asterisk telephony.
+**AP Infotech and Cyber Solution**
 
-Use this guide on your website as an introduction for agencies, managers, admins, and agents.
+Open the picture manual in a browser: [docs/manual/index.html](manual/index.html). The same screens are below. They were taken from the live app on 15 October 2026, signed in as Super Admin.
 
----
+Manual dialing, campaigns, and inbound calls on one agent phone.
 
-## 1. What is ProCaller?
+## 1. Sign in
 
-ProCaller is a cloud-style calling platform for sales and support teams. Agents dial from the browser. Supervisors manage campaigns, leads, live agents, recordings, and reports — with clear separation between agencies (tenants).
+![Sign-in page](manual/images/01-login.png)
 
-**What you get**
+1. Open ProCaller in the browser.
+2. Enter the work email and password created for you, then choose **Sign In**.
+3. Allow the microphone. The dialer uses the headset in this browser.
 
-- **Manual dialing** — type or click a number and call instantly  
-- **Preview Auto-dial** — the system reserves the next lead(s) and dials automatically  
-- **Dial ratio (1–32)** — dial several numbers at once; first answer wins  
-- **Campaigns & Excel lead import** — upload lists, assign agents, set wrap-up time and ratio  
-- **CRM leads & contacts** — statuses, notes, callbacks, dispositions  
-- **Call recordings** — stored securely; access limited by role  
-- **Live Operations** — see who is Available, On Call, Wrap-up, or Break  
-- **Reports** — daily agent and campaign stats; export CSV / Excel  
+Each person sees only their own agency. A user sees the campaigns assigned to them.
 
-ProCaller is built for hierarchical teams: Super Admin → Agency → Manager → Admin → Agent.
+## 2. Who does what
 
----
+| Role | What they do |
+|------|----------------|
+| Super Admin | Creates agencies, sets seat limits, and turns IVR voice campaigns on for an agency. Sees every agency. |
+| Agency | Runs one company. Creates managers, admins, and users on that line. Uploads leads, sets threads, sees calls, and can log a lower user out. |
+| Manager | Creates admins and users under their team. Manages campaigns, lead files, and reports for that team. |
+| Admin | Creates and edits campaigns, uploads lead files, and works reports. An admin does not create user accounts. |
+| User | Manual calls and Preview Auto on assigned campaigns. A user cannot change thread counts, and cannot turn lead files off or delete leads. |
 
-## 2. Who uses ProCaller?
+A PC number and an extension are attached once, when the account is created, and they stay with that person.
 
-| Role | Who they are | What they do |
-|------|----------------|--------------|
-| **Super Admin** | Platform owner | Create agencies, set seat limits, full system access including all recordings and audit |
-| **Agency** | Tenant / company owner | Manage managers, admins, and users; own campaigns, leads, reports, and agency recordings |
-| **Manager** | Team lead under an agency | Manage admins and agents in their tree; campaigns, leads, dialing, reports |
-| **Admin** | Campaign / lead operator | Create and edit campaigns, import leads, assign agents, dial, manage dispositions |
-| **User (Agent)** | Caller | Manual and Preview Auto dial, own call logs and own recordings |
+## 3. The menu
 
-Each login only sees data allowed for that role and that agency. Agents never see another agent’s recordings or another agency’s campaigns.
+Working screens: Dashboard, Live Operations, Dialer, Contacts, Leads, Campaigns, Calls, Recordings, Team, Reports, and Agencies (Super Admin).
 
----
+The hourly chart on the Dashboard, the Analytics page, Call Queue, and Follow-ups still draw sample pictures. Live figures are the count cards, Live Operations, Calls, Recordings, Leads, and Reports.
 
-## 3. Getting started
+## 4. Dashboard
 
-### 3.1 Sign in
+![Dashboard](manual/images/02-dashboard.png)
 
-1. Open the ProCaller web app.  
-2. Enter your **email** and **password**.  
-3. After login you land on the **Dialer** — the main calling screen.
+The count cards are live for today: calls, connected calls, leads, users against the seat limit, campaigns, and people online, in Preview Auto, in Manual, or on Break. The chart and ring under the cards are sample artwork. **Make First Call** opens the dialer.
 
-Sessions use secure tokens. Stay signed in on a trusted device; sign out when finished on a shared PC.
+## 5. Live Operations
 
-### 3.2 Main menu
+![Live Operations](manual/images/03-live-operations.png)
 
-| Menu item | Purpose |
-|-----------|---------|
-| **Dashboard** | Snapshot of activity and mode times |
-| **Live Operations** | Real-time agent statuses |
-| **Dialer** | Place and take calls |
-| **Contacts / Leads** | Customer records and campaign leads |
-| **Campaigns** | Create campaigns, import Excel, assign agents |
-| **Calls** | Call history and outcomes |
-| **Recordings** | Play or download authorized recordings |
-| **Follow-ups** | Callbacks and scheduled follow-ups |
-| **Team** | Create and manage staff (role-gated) |
-| **Reports** | Daily and campaign reports; CSV / Excel export |
-| **Agencies** | Super Admin tenant management |
-| **Settings** | Account and organisation preferences |
+Available, On Call, Wrap-up, Break, and Offline refresh about every 5 seconds. **Logout** ends that person’s session. An agency sees its own line.
 
-> **Note:** Some advanced items (Call Queue, IVR, Integrations, Billing) may appear as placeholders for future releases. Core dialing, campaigns, recordings, live ops, and reports are the production path today.
+## 6. Dialer
 
----
+### Manual
 
-## 4. The Dialer
+![Manual dialer](manual/images/04-dialer.png)
 
-The Dialer is where agents spend most of their time.
+1. Choose **Manual** and the campaign.
+2. Type the number. The prefix +91 is already shown.
+3. Press **Call**.
 
-### 4.1 Agent modes
+The screen stays on Ringing until the customer’s phone is answered, then it shows Connected. An inbound call rings the computer and offers **Answer** or **Hang up**.
 
-| Mode | Meaning |
-|------|---------|
-| **Manual** | You choose the number and press Call |
-| **Preview Auto** | System feeds leads and dials for you (with dial ratio) |
-| **Break** | You are paused; auto-dial stops |
+### Preview Auto
 
-Your online time is tracked by mode (Manual, Preview, Break) for reports and Live Operations.
+![Preview Auto](manual/images/04b-dialer-preview.png)
 
-### 4.2 Manual calling
+1. Choose **Preview Auto** and the campaign.
+2. The lead’s details fill the center. **Dialpad** opens the keypad. **Hide dialpad** returns to the lead.
+3. **Skip** moves on. **Break** pauses auto dialing.
 
-1. Select **Manual**.  
-2. Choose a **campaign** (optional but recommended so lead details appear).  
-3. Enter a number on the keypad, or open a lead/contact and use click-to-dial.  
-4. Press **Call**.  
-5. When the call ends, choose a **disposition**, add notes / callback if needed, and save.
+The thread count belongs to the campaign. It is how many Preview Auto users can be on a live call for that campaign at the same time. A user cannot change it. Staff who can edit the campaign set it on the campaign card, from 1 to 32.
 
-If that mobile number exists in your campaign upload, ProCaller shows the lead’s details on screen during the call.
+## 7. Campaigns
 
-### 4.3 Preview Auto-dial
+![Campaign card](manual/images/07-campaigns.png)
 
-1. Select **Preview Auto**.  
-2. Select the **campaign** you are working.  
-3. Set **Ratio** (1–32) in the header — you can change this anytime without leaving Preview Auto.  
-4. The system reserves lead(s) and starts dialing.  
-5. Talk to the connected customer.  
-6. After hangup, complete **disposition** and wait for **wrap-up** (campaign setting, often 30 seconds).  
-7. The next batch starts automatically.
+1. **New Campaign**.
+2. Set **Threads** (1–32).
+3. **Assign users**.
+4. **Upload Excel**. A mobile column is required. Every other column is stored on the lead. One mobile number is one lead inside a campaign.
+5. **Start auto** lets seated Preview Auto users take leads, one live call each, up to the thread count.
+6. **Pause** stops new auto calls. **Hold MP3** is the hold audio, up to 5 MB.
 
-**Dial ratio explained**
+## 8. Leads and contacts
 
-| Ratio | Behaviour |
-|-------|-----------|
-| **1** | One number at a time (classic preview) |
-| **2** | Two numbers dialed at the same time |
-| **4** | Four numbers at the same time |
-| **… up to 32** | Maximum concurrent lines per agent batch |
+![Leads](manual/images/06-leads.png)
 
-When several lines ring together, the **first customer who answers** is connected. The other lines are dropped. Campaign default ratio can be set when creating the campaign; agents may override it live on the Dialer.
+- Super Admin sees every agency. Agency, manager, and admin see their own agency. A user sees owned leads and leads on assigned campaigns.
+- Click an uploaded file to open its leads. A lead that has never been dialed shows **Not dialed**.
+- **Deactivate** makes Preview Auto skip that file. Each lead also has Off / On.
+- **Delete** removes the lead and keeps call history. Deleting a file removes its name once no lead from it is left on a live call.
+- A user cannot deactivate or delete leads.
 
-### 4.4 Wrap-up
+![Contacts](manual/images/05-contacts.png)
 
-After every call, ProCaller can hold a short **wrap-up** window (set per campaign, e.g. 30 seconds). Use this time to finish notes and disposition before the next auto-dial. During wrap-up your status shows as Wrap-up in Live Operations.
+## 9. Calls and recordings
 
-### 4.5 Dispositions (outcomes)
+![Calls](manual/images/08-calls.png)
 
-Typical outcomes on the dialer:
+![Recordings](manual/images/09-recordings.png)
 
-- Interested  
-- Callback Requested  
-- Not Interested  
-- No Answer  
-- Voicemail  
-- Wrong Number  
-- Busy  
-- Converted  
+A user plays their own recordings. An agency plays its own line. Super Admin can filter every agency.
 
-Callbacks store a follow-up time. Outcomes update the lead’s status for the next agent or report.
+## 10. Reports
 
-### 4.6 In-call controls
+![Reports](manual/images/13-reports.png)
 
-While connected you can:
+Filters combine: dates, agency, role, user, campaign, uploaded file, phone, call status, and disposition codes. Downloads use the same filters.
 
-- **Mute** / unmute  
-- **Hold** (plays campaign hold music if uploaded, otherwise a default tone)  
-- **Keypad** for DTMF  
-- **End call**  
-- **Recording** — calls are recorded for quality and compliance (see Recordings)
+- **Agent CSV** / **Agent Excel** — online, preview, break, calls, and talk.
+- **Campaign Excel** — results by campaign.
+- **Calls CSV** — every matching attempt.
+- **IVR CSV** — voice-campaign attempts. Hidden for a user.
+- **Uploaded file CSV** — one row per lead. Never called is `NOT_DIALED`.
 
----
+**All dates** clears the day limit. **Reset** returns to today. `CONNECTED` is stored only after the customer answered. A call still going out is `DIALING`. An unmatched network message is `UNKNOWN_UNCLASSIFIED`. The checkboxes are the full code list, including Hindi codes ending in `_HI`.
 
-## 5. Campaigns
+## 11. Team
 
-Campaigns group leads, agents, dial strategy, wrap-up, and hold music.
+![Team](manual/images/12-team.png)
 
-### 5.1 Create a campaign (wizard)
+**Add account** creates a manager, admin, or user your role is allowed to create. An agency creates people only inside its own company, and a new user needs a campaign in that agency. PC number and extension stay fixed.
 
-1. Open **Campaigns** → **New Campaign**.  
-2. **Details** — name, description, optional campaign code.  
-3. **Import Leads** — upload Excel; preview valid / invalid / duplicate rows; confirm import.  
-   - A **Mobile** column is required.  
-   - Extra columns are stored with the lead and can show on the dialer.  
-4. **Assign Agents** — select users who may work this list.  
-5. **Dialing Strategy** — Manual or Preview Auto; set **wrap-up seconds** and **dial ratio (1–32)**.  
-6. **Schedule** — working hours (as configured in your rollout).  
-7. **Review & Launch** — activate when ready.
+## 12. Agencies
 
-You can pause or resume an active campaign from the campaign card.
+![Agencies](manual/images/14-agencies.png)
 
-### 5.2 Hold music
+Super Admin uses **New Agency** to add a company and its manager, admin, and user limits. The IBR mark means that agency may run voice campaigns.
 
-Upload an **MP3** hold file per campaign (maximum **5 MB**). When an agent puts a caller on hold, that audio plays. If none is uploaded, a default tone is used.
+## 13. IVR voice campaigns
 
----
+When IBR is on, a manager, agency, or admin approves a file on an IVR campaign. ProCaller builds one voice message per number from that row. The campaign thread count is how many of those calls run at once. When the customer answers, that number’s message plays and the line hangs up. Download the result with **IVR CSV**. The voice is English. Outcomes use the same disposition codes.
 
-## 6. Leads and contacts
+## 14. A normal day
 
-- **Leads** — campaign queue records (new, assigned, calling, interested, callback, etc.).  
-- **Contacts** — CRM-style people you can search and dial.  
+1. Super Admin creates the agency and, when needed, turns on IBR.
+2. The agency creates managers, admins, and users, each user on a campaign.
+3. Staff upload the Excel file and set threads to match how many agents will sit in Preview Auto.
+4. Agents sign in, allow the microphone, and work Preview Auto.
+5. Supervisors watch Live Operations. Reports and the lead file show Not dialed, the IVR code, or Connected.
 
-Agents and supervisors can search, filter, and open a record into the Dialer. Lead status changes with every call attempt and disposition so the hopper stays accurate.
-
----
-
-## 7. Live Operations
-
-Supervisors open **Live Operations** to monitor the floor in near real time (refreshes about every 5 seconds).
-
-**At a glance**
-
-- Available  
-- On Call  
-- Wrap-up  
-- Break  
-- Offline  
-- Preview vs Manual counts  
-
-Actions such as Listen / Whisper / Barge may be offered depending on your Asterisk trunk configuration. Activity is logged for accountability.
-
----
-
-## 8. Call recordings
-
-Every call can be recorded and stored securely.
-
-**Who can hear what**
-
-| Role | Access |
-|------|--------|
-| **Agent** | Only their own recordings |
-| **Admin / Manager** | Their team / campaign scope |
-| **Agency** | All recordings in their organisation |
-| **Super Admin** | All recordings (optionally filtered by agency) |
-
-From **Recordings** you can play, download, or export selected files (ZIP, within system limits). Recordings are never exposed as public links — login and permissions are always required.
-
----
-
-## 9. Reports
-
-Open **Reports** to review:
-
-- **Daily agent report** — time Online / Manual / Preview / Break; calls, answers, talk and hold times  
-- **Campaign report** — performance by campaign  
-
-Export **CSV** or **Excel** for payroll, QA, or client reporting. Agents only see their own rows; agencies and managers see their scoped teams.
-
----
-
-## 10. Team and agencies
-
-- **Team** — managers and admins create users under their authority, within agency seat limits.  
-- **Agencies** — Super Admin creates tenants and sets max managers, admins, and users.  
-
-New staff receive login credentials from their administrator. Default passwords should be changed after first login in production.
-
----
-
-## 11. Best practices
-
-1. **Always select the correct campaign** before Preview Auto so ratio, wrap-up, hold music, and lead matching are correct.  
-2. **Set dial ratio carefully** — higher ratio means more simultaneous rings; match it to your SIM / gateway capacity.  
-3. **Complete dispositions** every time so lead status and reports stay trustworthy.  
-4. **Use Break** when stepping away instead of leaving Preview Auto running.  
-5. **Respect wrap-up** — finish notes before the next lead starts.  
-6. **Protect recordings** — only share downloads through authorised staff; they may contain personal data.
-
----
-
-## 12. Technical summary (for your website “About” / “Technology” section)
-
-| Area | Detail |
-|------|--------|
-| Agent phone | Browser **WebRTC** softphone |
-| Telephony | **Asterisk** (SIP / ARI) |
-| Application | Modern web UI + secure API |
-| Database | PostgreSQL |
-| Security | Role-based access, agency (tenant) isolation, JWT login |
-| Calling modes | Manual + Preview Auto with dial ratio 1–32 |
-
----
-
-## 13. Support
-
-For setup, Asterisk connectivity, agency onboarding, or training:
-
-**AP Infotech and Cyber Solution**  
-Product: **ProCaller**
-
-Include your support email, phone, and office hours on the live website.
-
----
-
-*© 2026 AP Infotech and Cyber Solution. ProCaller user documentation — suitable for website publication. Update screenshots and support contacts before going live.*
+© 2026 AP Infotech and Cyber Solution. ProCaller.
