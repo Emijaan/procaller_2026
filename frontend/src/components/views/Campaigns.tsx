@@ -238,6 +238,18 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
     load();
   };
 
+  const deleteLead = async (lead: CampaignLead) => {
+    if (!leadCamp) return;
+    if (!window.confirm(`Delete ${lead.name || lead.phone}? Call history stays.`)) return;
+    try {
+      await api(`/api/leads/${lead.id}/`, { method: 'DELETE' });
+      showToast(`${lead.name || lead.phone} deleted`, 'success');
+      await openLeads(leadCamp);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not delete the lead', 'error');
+    }
+  };
+
   const openLeads = async (camp: Campaign) => {
     setLeadCamp(camp);
     setOpenLead(null);
@@ -682,6 +694,7 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                   <th className="text-left px-3 py-2 font-medium">Agent</th>
                   <th className="text-left px-3 py-2 font-medium">Disposition</th>
                   <th className="text-left px-3 py-2 font-medium">Attempts</th>
+                  {can(user, 'edit_campaign') && <th className="text-right px-3 py-2 font-medium"> </th>}
                 </tr>
               </thead>
               <tbody>
@@ -699,6 +712,11 @@ export default function Campaigns({ showToast }: { showToast: (msg: string, type
                       <td className="px-3 py-2">{lead.last_agent || '—'}</td>
                       <td className="px-3 py-2">{lead.last_disposition || '—'}</td>
                       <td className="px-3 py-2">{lead.attempt_count || 0}</td>
+                      {can(user, 'edit_campaign') && (
+                        <td className="px-3 py-2 text-right">
+                          <button type="button" onClick={(event) => { event.stopPropagation(); deleteLead(lead); }} className="text-red-600 font-medium">Delete</button>
+                        </td>
+                      )}
                     </tr>
                     {openLead === lead.id && (
                       <tr className="bg-slate-50">

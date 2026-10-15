@@ -143,4 +143,55 @@ class LeadFileVisibilityTests(TestCase):
         self.assertEqual(wiped.status_code, 200, wiped.data)
         self.assertEqual(wiped.data["deleted"], 1)
         self.assertFalse(Contact.objects.filter(import_job_id=job_id).exists())
-        self.assertTrue(ImportJob.objects.filter(pk=job_id).exists())
+        self.assertFalse(ImportJob.objects.filter(pk=job_id).exists())
+        self.assertEqual(self._login("admin@a.com").get("/api/lead-files/").data, [])
+
+    def test_staff_can_delete_leads_from_an_older_upload(self):
+        job = ImportJob.objects.create(
+            agency=self.org,
+            campaign=self.camp,
+            created_by=self.agency,
+            file_name="old.xlsx",
+            status=ImportJob.Status.DONE,
+            imported_rows=4,
+        )
+        leads = [
+            Contact.objects.create(
+                name=email.split("@")[0],
+                phone=phone,
+                agency=self.org,
+                campaign=self.camp,
+                lead_status=Contact.LeadStatus.NEW,
+            )
+            for email, phone in (
+                ("root@a.com", "9110000001"),
+                ("agency@a.com", "9110000002"),
+                ("manager@a.com", "9110000003"),
+                ("admin@a.com", "9110000004"),
+            )
+        ]
+        outsider = Contact.objects.create(
+            name="Other",
+            phone="9110000009",
+            agency=self.other,
+            campaign=self.camp_b,
+            lead_status=Contact.LeadStatus.NEW,
+        )
+        listed = self._login("agency@a.com").get(f"/api/leads/?import_job={job.id}&limit=50")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual({row["id"] for row in listed.data}, {lead.id for lead in leads})
+        self.assertEqual(self._login("agency@b.com").delete(f"/api/leads/{leads[0].id}/").status_code, 404)
+        self.assertEqual(self._login("user@a.com").delete(f"/api/leads/{leads[0].id}/").status_code, 403)
+
+        for email, lead in zip(("root@a.com", "agency@a.com", "manager@a.com"), leads[:3]):
+            removed = self._login(email).delete(f"/api/leads/{lead.id}/")
+            self.assertEqual(removed.status_code, 200, removed.data)
+            self.assertFalse(Contact.objects.filter(pk=lead.id).exists())
+
+        wiped = self._login("admin@a.com").delete(f"/api/lead-files/{job.id}/")
+        self.assertEqual(wiped.status_code, 200, wiped.data)
+        self.assertEqual(wiped.data["deleted"], 1)
+        self.assertFalse(Contact.objects.filter(pk=leads[3].id).exists())
+        self.assertFalse(ImportJob.objects.filter(pk=job.id).exists())
+        self.assertEqual(self._login("agency@a.com").get("/api/lead-files/").data, [])
+        self.assertTrue(Contact.objects.filter(pk=outsider.id).exists())

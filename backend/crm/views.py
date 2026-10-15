@@ -44,7 +44,13 @@ class ContactListView(APIView):
             qs = qs.filter(status=Contact.Status.ACTIVE)
         import_job = request.query_params.get("import_job")
         if import_job:
-            qs = qs.filter(import_job_id=import_job)
+            from .queue import contacts_for_import_job
+
+            job = _scoped_import_jobs(request.user).filter(pk=import_job).first()
+            if job:
+                qs = qs.filter(pk__in=contacts_for_import_job(job).values("pk"))
+            else:
+                qs = qs.filter(import_job_id=import_job)
         try:
             limit = min(5000, max(1, int(request.query_params.get("limit") or 1000)))
         except (TypeError, ValueError):
@@ -220,7 +226,20 @@ class LeadFileListView(APIView):
 
     def get(self, request):
         require_perm(request.user, "edit_campaign")
-        return Response(ImportJobSerializer(_scoped_import_jobs(request.user)[:200], many=True).data)
+        from .queue import contacts_for_import_job
+
+        jobs = list(_scoped_import_jobs(request.user)[:200])
+        rows = []
+        for job in jobs:
+            leads = contacts_for_import_job(job)
+            lead_count = leads.count()
+            if lead_count == 0:
+                continue
+            row = ImportJobSerializer(job).data
+            row["lead_count"] = lead_count
+            row["inactive_count"] = leads.filter(status=Contact.Status.INACTIVE).count()
+            rows.append(row)
+        return Response(rows)
 
 
 class LeadFileDetailView(APIView):
@@ -240,9 +259,9 @@ class LeadFileDetailView(APIView):
             active = bool(active)
         job.active = active
         job.save(update_fields=["active", "updated_at"])
-        from .queue import set_leads_callable
+        from .queue import contacts_for_import_job, set_leads_callable
 
-        set_leads_callable(Contact.objects.filter(import_job=job), active)
+        set_leads_callable(contacts_for_import_job(job), active)
         job = _scoped_import_jobs(request.user).filter(pk=pk).first()
         write_audit(request.user, "lead_file_active" if active else "lead_file_inactive", "import_job", job.id, request)
         return Response(ImportJobSerializer(job).data)
@@ -252,10 +271,15 @@ class LeadFileDetailView(APIView):
         job = _scoped_import_jobs(request.user).filter(pk=pk).first()
         if not job:
             return Response({"detail": "Not found"}, status=404)
-        from .queue import delete_leads
+        from .queue import contacts_for_import_job, delete_leads
 
-        result = delete_leads(Contact.objects.filter(import_job=job))
+        result = delete_leads(contacts_for_import_job(job))
         write_audit(request.user, "lead_file_delete", "import_job", job.id, request, result)
+        if result["skipped"] == 0:
+            if job.source_file:
+                job.source_file.delete(save=False)
+            job.delete()
+            result["file_removed"] = True
         return Response(result)
 
 

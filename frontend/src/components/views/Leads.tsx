@@ -119,7 +119,11 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
     if (!window.confirm(`Delete every lead from ${file.file_name}? Call history stays.`)) return;
     try {
       const result = await api<{ deleted: number; skipped: number }>(`/api/lead-files/${file.id}/`, { method: 'DELETE' });
-      showToast(`Deleted ${result.deleted} lead${result.deleted === 1 ? '' : 's'}${result.skipped ? `. ${result.skipped} still on a call` : ''}`, 'success');
+      if (!result.deleted && !result.skipped) {
+        showToast('No leads were removed', 'error');
+      } else {
+        showToast(`Deleted ${result.deleted} lead${result.deleted === 1 ? '' : 's'}${result.skipped ? `. ${result.skipped} still on a call` : ''}`, 'success');
+      }
       load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Could not delete the leads', 'error');
@@ -199,7 +203,7 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                 <div key={file.id} className={`min-w-[240px] rounded-xl border px-3 py-2 ${fileId === file.id ? 'border-[#4F46E5] bg-indigo-50/40' : 'border-[#E2E8F0] bg-[#F8FAFC]'}`}>
                   <button type="button" onClick={() => setFileId(file.id)} className="text-left w-full">
                     <p className="text-sm font-medium text-slate-800 truncate">{file.file_name || 'Upload'}</p>
-                    <p className="text-[11px] text-slate-500 truncate">{file.campaign_name || 'No campaign'} · {file.imported_rows} leads · {file.dial_threads} threads</p>
+                    <p className="text-[11px] text-slate-500 truncate">{file.campaign_name || 'No campaign'} · {file.lead_count} leads · {file.dial_threads} threads</p>
                   </button>
                   <div className="flex items-center gap-2 mt-2">
                     <Badge variant={file.active ? 'success' : 'danger'}>{file.active ? 'Active' : 'Off'}</Badge>
@@ -242,7 +246,7 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Owner</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Last Contact</th>
                   <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wide">Next Follow-up</th>
-                  <th className="w-24 px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wide">Actions</th>
+                  <th className="sticky right-0 bg-[#F8FAFC] min-w-[148px] px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wide">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-[#F1F5F9]">
@@ -281,7 +285,7 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
                       </td>
                       <td className="px-3 py-3.5 text-xs text-slate-500">{fmtDate(lead.last_contact_at)}</td>
                       <td className="px-3 py-3.5 text-xs text-slate-500">{fmtDate(lead.next_callback_at)}</td>
-                      <td className="px-3 py-3.5">
+                      <td className="sticky right-0 bg-white px-3 py-3.5 group-hover:bg-slate-50">
                         <div className="flex items-center justify-end gap-1">
                           <button onClick={() => callLead(lead)} className="w-7 h-7 flex items-center justify-center rounded-lg bg-green-50 text-green-600 hover:bg-green-100 transition-colors" title="Call">
                             📞

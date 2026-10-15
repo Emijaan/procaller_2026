@@ -50,9 +50,29 @@ def set_leads_callable(qs, active):
     return len(ids)
 
 
+def contacts_for_import_job(job):
+    """Leads that belong to an upload.
+
+    Newer imports store the file on each lead. An older upload did not, so when
+    that file is the only one on the campaign, the campaign's unlinked leads are
+    that file.
+    """
+    from .models import ImportJob
+
+    linked = Contact.objects.filter(import_job=job)
+    if not job.campaign_id:
+        return linked
+    others = ImportJob.objects.filter(campaign_id=job.campaign_id, status=ImportJob.Status.DONE).exclude(pk=job.pk)
+    if others.exists():
+        return linked
+    return Contact.objects.filter(campaign_id=job.campaign_id).filter(Q(import_job=job) | Q(import_job__isnull=True))
+
+
 def delete_leads(qs):
     """Remove leads completely. A lead on a live call is left in place. Call history stays."""
     from telephony.models import Call
+
+    from .models import FollowUp
 
     ids = list(qs.values_list("id", flat=True))
     if not ids:
@@ -66,6 +86,8 @@ def delete_leads(qs):
     for lead in Contact.objects.filter(pk__in=ids).exclude(pk__in=live):
         if lead.tts_audio:
             lead.tts_audio.delete(save=False)
+        FollowUp.objects.filter(contact_id=lead.id).delete()
+        Call.objects.filter(contact_id=lead.id).update(contact=None)
         lead.delete()
         removed += 1
     return {"deleted": removed, "skipped": len(live)}
