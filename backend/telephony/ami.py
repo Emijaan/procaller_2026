@@ -276,7 +276,13 @@ def _find_call(msg):
     for key in ("Channel", "DestChannel"):
         channel = msg.get(key) or ""
         if channel:
-            call = Call.objects.filter(asterisk_channel=channel).order_by("-id").first()
+            # Asterisk restarts its channel counter, so an ended call can share this name.
+            call = (
+                Call.objects.filter(asterisk_channel=channel)
+                .exclude(state=Call.State.ENDED)
+                .order_by("-id")
+                .first()
+            )
             if call:
                 return call
     return None

@@ -154,6 +154,7 @@ export interface TelephonySession {
   extension: string;
   ice_servers: RTCIceServer[];
   sip: {
+    ice_servers?: RTCIceServer[];
     uri: string;
     password: string;
     ws_url: string;

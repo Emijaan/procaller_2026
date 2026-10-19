@@ -164,6 +164,9 @@ ASTERISK = {
     "STRIP_COUNTRY_CODE": os.getenv("ASTERISK_STRIP_COUNTRY_CODE", "91"),
     "ORIGINATE_STYLE": os.getenv("ASTERISK_ORIGINATE_STYLE", "vicibox"),
     "CHANNEL_TECH": os.getenv("ASTERISK_CHANNEL_TECH", "sip"),
+    "TURN_URL": os.getenv("TURN_URL", ""),
+    "TURN_USER": os.getenv("TURN_USER", ""),
+    "TURN_PASSWORD": os.getenv("TURN_PASSWORD", ""),
 }
 
 PIPER_VOICES = Path(os.getenv("PIPER_VOICES", BASE_DIR.parent / "piper-voices"))

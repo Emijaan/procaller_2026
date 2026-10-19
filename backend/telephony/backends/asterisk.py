@@ -10,6 +10,18 @@ from .base import TelephonyBackend
 logger = logging.getLogger(__name__)
 
 
+def ice_servers_for_browser():
+    servers = [{"urls": "stun:stun.l.google.com:19302"}]
+    ast = settings.ASTERISK
+    if ast.get("TURN_URL"):
+        servers.append({
+            "urls": ast["TURN_URL"],
+            "username": ast.get("TURN_USER") or "",
+            "credential": ast.get("TURN_PASSWORD") or "",
+        })
+    return servers
+
+
 class AsteriskTelephony(TelephonyBackend):
     name = "asterisk"
 
@@ -18,10 +30,12 @@ class AsteriskTelephony(TelephonyBackend):
 
         sip_user, sip_password = sip_login_for(user)
         conference = f"pc{session.id}"
+        ice_servers = ice_servers_for_browser()
         return {
             "mode": "asterisk",
-            "ice_servers": [{"urls": "stun:stun.l.google.com:19302"}],
+            "ice_servers": ice_servers,
             "sip": {
+                "ice_servers": ice_servers,
                 "uri": f"sip:{sip_user}@{settings.ASTERISK['SIP_DOMAIN']}",
                 "password": sip_password,
                 "ws_url": settings.ASTERISK["SIP_WS"],

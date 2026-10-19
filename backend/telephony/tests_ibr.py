@@ -429,3 +429,37 @@ class CustomerAnswerTests(TestCase):
         call.refresh_from_db()
         self.assertEqual(call.state, Call.State.CONNECTED)
         self.assertIsNotNone(call.answered_at)
+
+    def test_answer_after_asterisk_restart_reaches_the_live_call(self):
+        from telephony.ami import _handle_event
+
+        org = Organization.objects.create(name="Restart Org")
+        agent = User.objects.create_user(
+            email="agent@restart.test", password="x", role=User.Role.USER, organization=org, extension="2102", sip_username="2102",
+        )
+        old = Call.objects.create(
+            agent=agent, phone_number="9650920579", callerid_token="old-1", state=Call.State.ENDED,
+            asterisk_channel="PJSIP/gsm222-00000005",
+        )
+        live = Call.objects.create(
+            agent=agent, phone_number="9650920579", callerid_token="live-1", state=Call.State.RINGING,
+        )
+        _handle_event({
+            "Event": "DialEnd",
+            "Channel": "PJSIP/2102-00000004",
+            "DestChannel": "PJSIP/gsm222-00000005",
+            "DialStatus": "ANSWER",
+        })
+        live.refresh_from_db()
+        old.refresh_from_db()
+        self.assertEqual(live.state, Call.State.CONNECTED)
+        self.assertIsNotNone(live.answered_at)
+        self.assertEqual(live.asterisk_channel, "PJSIP/gsm222-00000005")
+        self.assertIsNone(old.answered_at)
+        _handle_event({
+            "Event": "Hangup",
+            "Channel": "PJSIP/gsm222-00000005",
+            "Cause": "16",
+        })
+        live.refresh_from_db()
+        self.assertEqual(live.state, Call.State.ENDED)

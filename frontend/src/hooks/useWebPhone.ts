@@ -441,7 +441,7 @@ export function useWebPhone() {
       sessionDescriptionHandlerFactoryOptions: {
         constraints: { audio: true, video: false },
         peerConnectionConfiguration: {
-          iceServers: [],
+          iceServers: sip.ice_servers?.length ? sip.ice_servers : [{ urls: 'stun:stun.l.google.com:19302' }],
         },
       },
     });
