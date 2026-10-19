@@ -1,6 +1,7 @@
 from django.urls import path
 
 from telephony.reports import (
+    AnalyticsView,
     CallReportView,
     CampaignReportView,
     DailyReportView,
@@ -25,6 +26,7 @@ urlpatterns = [
     path("staff/", StaffListCreateView.as_view(), name="staff-list"),
     path("staff/<int:pk>/", StaffDetailView.as_view(), name="staff-detail"),
     path("dashboard/", DashboardView.as_view(), name="dashboard"),
+    path("analytics/", AnalyticsView.as_view(), name="analytics"),
     path("audit-logs/", AuditListView.as_view(), name="audit-list"),
     path("live/agents/", LiveAgentsView.as_view(), name="live-agents"),
     path("live/actions/", LiveActionView.as_view(), name="live-actions"),

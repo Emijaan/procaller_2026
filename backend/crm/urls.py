@@ -3,9 +3,12 @@ from django.urls import path
 from .views import (
     ContactDetailView,
     ContactListView,
+    FollowUpDetailView,
+    FollowUpListView,
     LeadFileDetailView,
     LeadFileDownloadView,
     LeadFileListView,
+    LeadReloadView,
     LookupLeadView,
     NextLeadView,
     ReleaseLeadView,
@@ -22,5 +25,8 @@ urlpatterns = [
     path("leads/next/", NextLeadView.as_view(), name="lead-next"),
     path("leads/reserve/", NextLeadView.as_view(), name="lead-reserve"),
     path("leads/release/", ReleaseLeadView.as_view(), name="lead-release"),
+    path("leads/reload/", LeadReloadView.as_view(), name="lead-reload"),
     path("leads/<int:pk>/", ContactDetailView.as_view(), name="lead-detail"),
+    path("followups/", FollowUpListView.as_view(), name="followup-list"),
+    path("followups/<int:pk>/", FollowUpDetailView.as_view(), name="followup-detail"),
 ]

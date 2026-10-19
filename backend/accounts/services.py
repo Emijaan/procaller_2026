@@ -88,6 +88,44 @@ def assert_agency_limits(org, role):
         raise ValueError(f"User limit reached ({org.max_users}/{org.max_users})")
 
 
+def agency_seat_limits(data, *, required):
+    """Manager, admin, and user caps Super Admin sets on an agency."""
+    labels = {
+        "max_managers": "Manager limit",
+        "max_admins": "Admin limit",
+        "max_users": "User limit",
+    }
+    found = {}
+    for key, label in labels.items():
+        if key not in data or data.get(key) in (None, ""):
+            if required:
+                raise ValueError(f"{label} is required")
+            continue
+        try:
+            number = int(data.get(key))
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} must be a whole number")
+        if number < 0:
+            raise ValueError(f"{label} cannot be negative")
+        found[key] = number
+    return found
+
+
+def organization_for_agency_login(organization, name, **limits):
+    """An agency login owns one company and never joins a company that already has people."""
+    if organization is not None and not organization.members.exists():
+        org = organization
+    else:
+        label = (name or "Agency").strip() or "Agency"
+        org = Organization.objects.create(name=label[:200])
+    applied = {key: value for key, value in limits.items() if key in {"max_managers", "max_admins", "max_users"} and value is not None}
+    if applied:
+        for key, value in applied.items():
+            setattr(org, key, value)
+        org.save(update_fields=[*applied.keys(), "updated_at"])
+    return org
+
+
 def assert_manager_limits(manager, role):
     if not manager:
         return
@@ -115,7 +153,12 @@ def create_account(actor, *, email, password, role, organization=None, reports_t
     if not is_super_admin(actor) and ROLE_RANK.get(role, 0) >= role_rank(actor):
         raise ValueError("Cannot create an account at or above your level")
     org = organization
-    if role != User.Role.SUPER_ADMIN:
+    if role == User.Role.AGENCY:
+        label = extra.get("first_name") or extra.get("team") or email
+        limits = {key: extra.pop(key) for key in ("max_managers", "max_admins", "max_users") if key in extra}
+        org = organization_for_agency_login(organization, label, **limits)
+        reports_to = None
+    elif role != User.Role.SUPER_ADMIN:
         own = agency_of(actor)
         if not is_super_admin(actor):
             if organization and own and organization.id != own.id:

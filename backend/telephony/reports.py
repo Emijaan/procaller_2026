@@ -903,3 +903,153 @@ class LiveActionView(APIView):
             return Response({"detail": str(exc)}, status=403)
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
+
+
+PERIOD_DAYS = {"1d": 1, "7d": 7, "30d": 30, "90d": 90}
+
+
+def _period_bounds(period):
+    days = PERIOD_DAYS.get(period, 7)
+    local_now = timezone.localtime()
+    today = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today - timedelta(days=days - 1)
+    finish = today + timedelta(days=1)
+    return days, start, finish, start - timedelta(days=days), start
+
+
+def _call_window(user, start, finish):
+    return list(
+        scoped_calls(user, Call.objects.filter(started_at__gte=start, started_at__lt=finish)).only(
+            "id", "agent_id", "contact_id", "started_at", "answered_at", "duration_seconds", "disposition", "outcome"
+        )
+    )
+
+
+def _average_talk(calls):
+    talked = [call.duration_seconds or 0 for call in calls if call.answered_at]
+    if not talked:
+        return 0
+    return int(round(sum(talked) / len(talked)))
+
+
+def _rate(connected, total):
+    if not total:
+        return 0
+    return round(connected * 100 / total, 1)
+
+
+def _change(current, previous):
+    if not previous:
+        return None
+    return round((current - previous) * 100 / previous, 1)
+
+
+def analytics_payload(user, period):
+    period = period if period in PERIOD_DAYS else "7d"
+    days, start, finish, previous_start, previous_finish = _period_bounds(period)
+    current = _call_window(user, start, finish)
+    previous = _call_window(user, previous_start, previous_finish)
+    connected = [call for call in current if call.answered_at]
+    previous_connected = [call for call in previous if call.answered_at]
+    current_rate = _rate(len(connected), len(current))
+    previous_rate = _rate(len(previous_connected), len(previous))
+    current_talk = _average_talk(current)
+    previous_talk = _average_talk(previous)
+
+    if days == 1:
+        series = [{"label": f"{hour:02d}", "calls": 0, "connected": 0} for hour in range(24)]
+        for call in current:
+            slot = series[timezone.localtime(call.started_at).hour]
+            slot["calls"] += 1
+            if call.answered_at:
+                slot["connected"] += 1
+    else:
+        series = []
+        cursor = start
+        while cursor < finish:
+            series.append({"label": cursor.strftime("%d %b"), "calls": 0, "connected": 0, "_day": cursor.date()})
+            cursor += timedelta(days=1)
+        index = {row["_day"]: row for row in series}
+        for call in current:
+            slot = index.get(timezone.localtime(call.started_at).date())
+            if not slot:
+                continue
+            slot["calls"] += 1
+            if call.answered_at:
+                slot["connected"] += 1
+        for row in series:
+            row.pop("_day", None)
+
+    hourly = [{"hour": f"{hour:02d}", "calls": 0, "connected": 0} for hour in range(24)]
+    outcomes = {}
+    by_agent = {}
+    dialed_leads = set()
+    connected_leads = set()
+    for call in current:
+        hour = hourly[timezone.localtime(call.started_at).hour]
+        hour["calls"] += 1
+        code = canonical_code(call.disposition) or (call.outcome or "").strip() or "NO_DISPOSITION"
+        outcomes[code] = outcomes.get(code, 0) + 1
+        bucket = by_agent.setdefault(call.agent_id, {"calls": 0, "connected": 0, "talk_seconds": 0})
+        bucket["calls"] += 1
+        if call.answered_at:
+            hour["connected"] += 1
+            bucket["connected"] += 1
+            bucket["talk_seconds"] += call.duration_seconds or 0
+            if call.contact_id:
+                connected_leads.add(call.contact_id)
+        if call.contact_id:
+            dialed_leads.add(call.contact_id)
+
+    people = {
+        person.id: person
+        for person in scoped_users(user).filter(pk__in=list(by_agent) or [0])
+    }
+    agents = []
+    for agent_id, stats in sorted(by_agent.items(), key=lambda item: (-item[1]["connected"], -item[1]["calls"])):
+        person = people.get(agent_id)
+        if not person:
+            continue
+        agents.append(
+            {
+                "id": person.id,
+                "name": person.display_name,
+                "initials": person.avatar_initials or "PC",
+                "calls": stats["calls"],
+                "connected": stats["connected"],
+                "talk_seconds": stats["talk_seconds"],
+            }
+        )
+
+    leads = scoped_leads(user, Contact.objects.all())
+    lead_count = leads.count()
+    return {
+        "period": period,
+        "totals": {
+            "calls": len(current),
+            "calls_trend": _change(len(current), len(previous)),
+            "answer_rate": current_rate,
+            "answer_rate_trend": _change(current_rate, previous_rate),
+            "avg_duration_seconds": current_talk,
+            "avg_duration_trend": _change(current_talk, previous_talk),
+            "connected": len(connected),
+            "connected_trend": _change(len(connected), len(previous_connected)),
+        },
+        "series": series,
+        "hourly": hourly,
+        "outcomes": [{"name": name, "value": value} for name, value in sorted(outcomes.items(), key=lambda item: -item[1])],
+        "funnel": [
+            {"name": "Leads", "value": lead_count},
+            {"name": "Dialed", "value": len(dialed_leads)},
+            {"name": "Connected", "value": len(connected_leads)},
+        ],
+        "agents": agents,
+    }
+
+
+class AnalyticsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        _can_report(request.user)
+        return Response(analytics_payload(request.user, (request.query_params.get("period") or "7d").lower()))

@@ -93,6 +93,77 @@ def delete_leads(qs):
     return {"deleted": removed, "skipped": len(live)}
 
 
+RELOAD_SKIP = {"NOT_DIALED", "DIALING"}
+LIVE_CALL_STATES = ["initiating", "ringing", "connected", "on_hold"]
+
+
+def reload_disposition_choices():
+    from telephony.causes import announcement, disposition_codes
+
+    return [
+        {"code": code, "label": announcement(code) or code}
+        for code in disposition_codes()
+        if code not in RELOAD_SKIP
+    ]
+
+
+def reload_leads_for_dispositions(user, codes, leads=None):
+    """Put leads with the chosen dispositions back into auto-dial. Call history stays."""
+    from django.db.models import OuterRef, Subquery
+
+    from telephony.causes import canonical_code, lead_disposition
+    from telephony.models import Call
+
+    from .models import Contact
+
+    wanted = set()
+    for code in codes or []:
+        cleaned = canonical_code(code) or str(code or "").strip()
+        if cleaned and cleaned not in RELOAD_SKIP:
+            wanted.add(cleaned)
+    if not wanted:
+        raise ValueError("Select at least one disposition")
+
+    qs = scoped_leads(user, Contact.objects.all())
+    if leads is not None:
+        qs = qs.filter(pk__in=leads.values("id"))
+
+    latest = Call.objects.filter(contact_id=OuterRef("pk")).order_by("-id")
+    qs = qs.annotate(
+        latest_call_state=Subquery(latest.values("state")[:1]),
+        latest_call_disposition=Subquery(latest.values("disposition")[:1]),
+    )
+    matched = []
+    skipped = 0
+    for lead in qs.iterator():
+        if lead_disposition(lead)["disposition_code"] not in wanted:
+            continue
+        if lead.dnc or (lead.latest_call_state or "") in LIVE_CALL_STATES:
+            skipped += 1
+            continue
+        matched.append(lead.id)
+    if not matched:
+        return {"reloaded": 0, "skipped": skipped}
+    live = set(
+        Call.objects.filter(contact_id__in=matched, state__in=LIVE_CALL_STATES).values_list("contact_id", flat=True)
+    )
+    skipped += len(live)
+    ids = [pk for pk in matched if pk not in live]
+    Contact.objects.filter(pk__in=ids, owner__isnull=False).update(
+        status=Contact.Status.ACTIVE,
+        lead_status=Contact.LeadStatus.ASSIGNED,
+        reserved_by=None,
+        reserved_until=None,
+    )
+    Contact.objects.filter(pk__in=ids, owner__isnull=True).update(
+        status=Contact.Status.ACTIVE,
+        lead_status=Contact.LeadStatus.NEW,
+        reserved_by=None,
+        reserved_until=None,
+    )
+    return {"reloaded": len(ids), "skipped": skipped}
+
+
 def release_lead(lead, status=None):
     if not lead:
         return

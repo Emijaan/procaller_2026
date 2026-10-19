@@ -206,7 +206,7 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
           ))}
         </div>
       </div>
-      <Modal open={open} onClose={() => setOpen(false)} title={editing ? 'Edit agency' : 'Create agency'}>
+      <Modal open={open} onClose={() => setOpen(false)} title={editing ? 'Edit agency' : 'Create agency'} size="lg">
         <div className="space-y-3">
           <Input label="Agency name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           {!editing && (
@@ -215,10 +215,11 @@ export default function Agencies({ showToast }: { showToast: (msg: string, type?
               <Input label="Password" type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
             </>
           )}
+          <p className="text-xs text-slate-500">How many managers, admins, and users this agency can create.</p>
           <div className="grid grid-cols-3 gap-3">
-            <Input label="Manager limit" value={form.max_managers} onChange={(e) => setForm({ ...form, max_managers: e.target.value })} />
-            <Input label="Admin limit" value={form.max_admins} onChange={(e) => setForm({ ...form, max_admins: e.target.value })} />
-            <Input label="User limit" value={form.max_users} onChange={(e) => setForm({ ...form, max_users: e.target.value })} />
+            <Input label="Max managers" value={form.max_managers} onChange={(e) => setForm({ ...form, max_managers: e.target.value })} />
+            <Input label="Max admins" value={form.max_admins} onChange={(e) => setForm({ ...form, max_admins: e.target.value })} />
+            <Input label="Max users" value={form.max_users} onChange={(e) => setForm({ ...form, max_users: e.target.value })} />
           </div>
           {editing && isSuper && (
             <label className="flex items-center gap-2 text-sm text-slate-700">

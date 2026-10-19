@@ -30,6 +30,7 @@ from .serializers import (
     UserWriteSerializer,
 )
 from .services import (
+    agency_seat_limits,
     assign_staff_campaigns,
     campaign_ids_from_payload,
     create_account,
@@ -240,21 +241,24 @@ class StaffListCreateView(APIView):
             if not reports_to:
                 return Response({"detail": "Manager is not in your agency"}, status=403)
         campaign_ids = campaign_ids_from_payload(request.data) or []
+        account = dict(
+            email=request.data.get("email"),
+            password=request.data.get("password") or "ProCaller@2026",
+            role=role,
+            organization=org,
+            reports_to=reports_to,
+            first_name=request.data.get("first_name") or "",
+            last_name=request.data.get("last_name") or "",
+            team=request.data.get("team") or "",
+        )
         try:
+            if role == User.Role.AGENCY:
+                account.update(agency_seat_limits(request.data, required=True))
+            else:
+                account["max_admins"] = int(request.data.get("max_admins") or 5)
+                account["max_users"] = int(request.data.get("max_users") or 50)
             require_calling_campaigns(role, campaign_ids)
-            user = create_account(
-                request.user,
-                email=request.data.get("email"),
-                password=request.data.get("password") or "ProCaller@2026",
-                role=role,
-                organization=org,
-                reports_to=reports_to,
-                first_name=request.data.get("first_name") or "",
-                last_name=request.data.get("last_name") or "",
-                team=request.data.get("team") or "",
-                max_admins=int(request.data.get("max_admins") or 5),
-                max_users=int(request.data.get("max_users") or 50),
-            )
+            user = create_account(request.user, **account)
             assign_staff_campaigns(request.user, user, campaign_ids, required=role in {User.Role.USER, User.Role.AGENT})
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
@@ -295,7 +299,16 @@ class StaffDetailView(APIView):
             remaining = User.objects.filter(role=User.Role.SUPER_ADMIN, is_active=True).exclude(pk=target.pk).count()
             if remaining < 1:
                 return Response({"detail": "Cannot demote the last Super Admin."}, status=400)
-        serializer = UserWriteSerializer(target, data=request.data, partial=True)
+        payload = request.data.copy()
+        org_limits = {}
+        if is_super_admin(request.user) and role_of(target) == User.Role.AGENCY:
+            try:
+                org_limits = agency_seat_limits(payload, required=False)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=400)
+            for key in ("max_managers", "max_admins", "max_users"):
+                payload.pop(key, None)
+        serializer = UserWriteSerializer(target, data=payload, partial=True)
         serializer.is_valid(raise_exception=True)
         password = serializer.validated_data.pop("password", None)
         try:
@@ -318,6 +331,10 @@ class StaffDetailView(APIView):
                 assign_user_port(user, request.data.get("gsm_port"))
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=400)
+        if org_limits and user.organization_id:
+            for key, value in org_limits.items():
+                setattr(user.organization, key, value)
+            user.organization.save(update_fields=[*org_limits.keys(), "updated_at"])
         write_audit(request.user, "user_update", "user", user.id, request, {"role": user.role})
         return Response(UserSerializer(user).data)
 

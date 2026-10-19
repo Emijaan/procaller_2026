@@ -16,6 +16,9 @@ type StaffForm = {
   reports_to: string;
   campaigns: string[];
   gsm_port: string;
+  max_managers: string;
+  max_admins: string;
+  max_users: string;
 };
 
 const emptyForm: StaffForm = {
@@ -29,6 +32,9 @@ const emptyForm: StaffForm = {
   reports_to: '',
   campaigns: [],
   gsm_port: '',
+  max_managers: '10',
+  max_admins: '30',
+  max_users: '300',
 };
 
 function roleOptions(actor: User | null) {
@@ -141,6 +147,9 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
       reports_to: person.reports_to ? String(person.reports_to) : '',
       campaigns: (person.campaign_ids || []).map(String),
       gsm_port: person.gsm_port ? String(person.gsm_port) : '',
+      max_managers: String(person.organization?.max_managers ?? 10),
+      max_admins: String(person.organization?.max_admins ?? 30),
+      max_users: String(person.organization?.max_users ?? 300),
     });
     setOpen(true);
   };
@@ -159,6 +168,13 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
       showToast('Assign a GSM channel from this agency', 'error');
       return;
     }
+    if (form.role === 'agency' && isSuperActor(user)) {
+      const limits = [form.max_managers, form.max_admins, form.max_users];
+      if (limits.some((value) => value.trim() === '' || Number.isNaN(Number(value)) || Number(value) < 0)) {
+        showToast('Set how many managers, admins, and users this agency can create', 'error');
+        return;
+      }
+    }
     setBusy(true);
     try {
       const payload: Record<string, unknown> = {
@@ -167,7 +183,7 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
         last_name: form.last_name,
         role: form.role,
         team: form.team,
-        organization: form.organization ? Number(form.organization) : undefined,
+        organization: form.role === 'agency' && !editing ? undefined : (form.organization ? Number(form.organization) : undefined),
         reports_to: form.reports_to ? Number(form.reports_to) : null,
         campaigns: form.campaigns.map(Number),
       };
@@ -175,6 +191,11 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
         payload.gsm_port = form.gsm_port ? Number(form.gsm_port) : null;
       }
       if (form.password) payload.password = form.password;
+      if (form.role === 'agency' && isSuperActor(user)) {
+        payload.max_managers = Number(form.max_managers);
+        payload.max_admins = Number(form.max_admins);
+        payload.max_users = Number(form.max_users);
+      }
       if (editing) {
         await api(`/api/staff/${editing.id}/`, { method: 'PATCH', body: JSON.stringify(payload) });
         showToast('Account updated', 'success');
@@ -340,7 +361,21 @@ export default function Team({ showToast }: { showToast: (msg: string, type?: 's
             <Select label="Role" value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} options={roleOptions(user)} />
             <Input label="Team" value={form.team} onChange={(e) => setForm({ ...form, team: e.target.value })} placeholder="Sales Alpha" />
           </div>
-          {isSuper && agencies.length > 0 && (
+          {form.role === 'agency' && isSuperActor(user) && (
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500">
+                {editing
+                  ? 'These limits are how many managers, admins, and users this agency can create.'
+                  : 'This account gets its own company. Set how many managers, admins, and users it can create.'}
+              </p>
+              <div className="grid grid-cols-3 gap-3">
+                <Input label="Max managers" value={form.max_managers} onChange={(e) => setForm({ ...form, max_managers: e.target.value })} />
+                <Input label="Max admins" value={form.max_admins} onChange={(e) => setForm({ ...form, max_admins: e.target.value })} />
+                <Input label="Max users" value={form.max_users} onChange={(e) => setForm({ ...form, max_users: e.target.value })} />
+              </div>
+            </div>
+          )}
+          {isSuper && agencies.length > 0 && form.role !== 'agency' && (
             <Select
               label="Agency"
               value={form.organization}

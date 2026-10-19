@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 from accounts.models import Organization, User
 from campaigns.models import Campaign
 from crm.models import Contact, ImportJob
+from telephony.models import Call
 
 
 def _workbook(rows):
@@ -195,3 +196,72 @@ class LeadFileVisibilityTests(TestCase):
         self.assertFalse(ImportJob.objects.filter(pk=job.id).exists())
         self.assertEqual(self._login("agency@a.com").get("/api/lead-files/").data, [])
         self.assertTrue(Contact.objects.filter(pk=outsider.id).exists())
+
+    def test_reload_puts_selected_dispositions_back_into_auto_dial(self):
+        switched = Contact.objects.create(
+            name="Switched", phone="9001110001", agency=self.org, campaign=self.camp, owner=self.agent,
+            lead_status=Contact.LeadStatus.CONNECTED, status=Contact.Status.INACTIVE,
+        )
+        answered = Contact.objects.create(
+            name="Answered", phone="9001110002", agency=self.org, campaign=self.camp,
+            lead_status=Contact.LeadStatus.INTERESTED,
+        )
+        live = Contact.objects.create(
+            name="Live", phone="9001110003", agency=self.org, campaign=self.camp,
+            lead_status=Contact.LeadStatus.CALLING,
+        )
+        blocked = Contact.objects.create(
+            name="Blocked", phone="9001110004", agency=self.org, campaign=self.camp, dnc=True,
+            lead_status=Contact.LeadStatus.NOT_CONNECTED,
+        )
+        outsider = Contact.objects.create(
+            name="Outsider", phone="9001110005", agency=self.other, campaign=self.camp_b,
+            lead_status=Contact.LeadStatus.CONNECTED,
+        )
+        Call.objects.create(
+            agent=self.agent, contact=switched, campaign=self.camp, phone_number=switched.phone,
+            state=Call.State.ENDED, disposition="SWITCHED_OFF", callerid_token="reload-1",
+        )
+        Call.objects.create(
+            agent=self.agent, contact=answered, campaign=self.camp, phone_number=answered.phone,
+            state=Call.State.ENDED, disposition="CONNECTED", callerid_token="reload-2",
+        )
+        Call.objects.create(
+            agent=self.agent, contact=live, campaign=self.camp, phone_number=live.phone,
+            state=Call.State.RINGING, disposition="SWITCHED_OFF", callerid_token="reload-3",
+        )
+        Call.objects.create(
+            agent=self.agent, contact=blocked, campaign=self.camp, phone_number=blocked.phone,
+            state=Call.State.ENDED, disposition="SWITCHED_OFF", callerid_token="reload-4",
+        )
+        Call.objects.create(
+            agent=self.agency_b, contact=outsider, campaign=self.camp_b, phone_number=outsider.phone,
+            state=Call.State.ENDED, disposition="SWITCHED_OFF", callerid_token="reload-5",
+        )
+
+        agency = self._login("agency@a.com")
+        choices = agency.get("/api/leads/reload/")
+        self.assertEqual(choices.status_code, 200)
+        self.assertIn("SWITCHED_OFF", {row["code"] for row in choices.data["dispositions"]})
+        self.assertNotIn("NOT_DIALED", {row["code"] for row in choices.data["dispositions"]})
+        self.assertEqual(self._login("user@a.com").post("/api/leads/reload/", {"dispositions": ["SWITCHED_OFF"]}, format="json").status_code, 403)
+
+        reloaded = agency.post("/api/leads/reload/", {"dispositions": ["SWITCHED_OFF"]}, format="json")
+        self.assertEqual(reloaded.status_code, 200, reloaded.data)
+        self.assertEqual(reloaded.data["reloaded"], 1)
+        self.assertEqual(reloaded.data["skipped"], 2)
+        switched.refresh_from_db()
+        self.assertEqual(switched.lead_status, Contact.LeadStatus.ASSIGNED)
+        self.assertEqual(switched.status, Contact.Status.ACTIVE)
+        answered.refresh_from_db()
+        self.assertEqual(answered.lead_status, Contact.LeadStatus.INTERESTED)
+        live.refresh_from_db()
+        self.assertEqual(live.lead_status, Contact.LeadStatus.CALLING)
+        outsider.refresh_from_db()
+        self.assertEqual(outsider.lead_status, Contact.LeadStatus.CONNECTED)
+        self.assertEqual(Call.objects.filter(contact=switched).count(), 1)
+
+        from crm.queue import reserve_next_lead
+
+        nxt = reserve_next_lead(self.agent, campaign_id=self.camp.id)
+        self.assertEqual(nxt.id, switched.id)

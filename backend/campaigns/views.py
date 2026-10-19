@@ -457,7 +457,7 @@ class CampaignImportConfirmView(APIView):
         )
 
 
-def _lead_board(camp, contacts):
+def _lead_board(camp, contacts, user=None):
     from telephony.models import Call
     from telephony.utils import format_duration
 
@@ -467,15 +467,16 @@ def _lead_board(camp, contacts):
     grouped = {pk: [] for pk in ids}
     totals = {}
     if ids:
+        from accounts.access import is_super_admin, scoped_calls
+
+        history_qs = Call.objects.filter(contact_id__in=ids)
+        if user is not None and not is_super_admin(user):
+            history_qs = scoped_calls(user, history_qs)
         totals = {
             item["contact_id"]: item["c"]
-            for item in Call.objects.filter(contact_id__in=ids).values("contact_id").annotate(c=Count("id"))
+            for item in history_qs.values("contact_id").annotate(c=Count("id"))
         }
-        calls = (
-            Call.objects.filter(contact_id__in=ids)
-            .select_related("agent")
-            .order_by("-id")
-        )
+        calls = history_qs.select_related("agent").order_by("-id")
         for call in calls:
             bucket = grouped.get(call.contact_id)
             if bucket is None or len(bucket) >= 8:
@@ -541,7 +542,7 @@ class CampaignLeadListView(APIView):
             return Response({"detail": "Not found"}, status=404)
         qs = scoped_leads(request.user, Contact.objects.filter(campaign=camp)).select_related("owner", "campaign")
         contacts = list(qs.order_by("id")[:500])
-        return Response(_lead_board(camp, contacts))
+        return Response(_lead_board(camp, contacts, request.user))
 
     def post(self, request, pk):
         require_perm(request.user, "assign_leads")

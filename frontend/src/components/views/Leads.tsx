@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Badge, Avatar, Button, SearchInput, ScoreRing } from '../ui/index';
+import { Badge, Avatar, Button, SearchInput, ScoreRing, Modal } from '../ui/index';
 import { api, apiBlob, triggerDownload } from '../../api/client';
 import { can } from '../../api/access';
 import type { Contact } from '../../api/types';
@@ -71,6 +71,10 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
   const [view, setView] = useState<'table' | 'kanban'>('table');
   const [search, setSearch] = useState('');
   const [activeTab, setActiveTab] = useState('all');
+  const [reloadOpen, setReloadOpen] = useState(false);
+  const [reloadCodes, setReloadCodes] = useState<{ code: string; label: string }[]>([]);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [reloading, setReloading] = useState(false);
 
   const load = () => {
     const qs = new URLSearchParams({ limit: '2000' });
@@ -130,6 +134,43 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
     }
   };
 
+  const openReload = async () => {
+    setReloadOpen(true);
+    setPicked([]);
+    try {
+      const data = await api<{ dispositions: { code: string; label: string }[] }>('/api/leads/reload/');
+      setReloadCodes(data.dispositions || []);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not load dispositions', 'error');
+      setReloadOpen(false);
+    }
+  };
+
+  const reloadLeads = async () => {
+    if (picked.length === 0) {
+      showToast('Select at least one disposition', 'error');
+      return;
+    }
+    setReloading(true);
+    try {
+      const result = await api<{ reloaded: number; skipped: number }>('/api/leads/reload/', {
+        method: 'POST',
+        body: JSON.stringify({
+          dispositions: picked,
+          import_job: fileId || undefined,
+        }),
+      });
+      const skipped = result.skipped ? ` ${result.skipped} left on a live call or blocked.` : '';
+      showToast(`${result.reloaded} lead${result.reloaded === 1 ? '' : 's'} will be dialed again.${skipped}`, 'success');
+      setReloadOpen(false);
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not reload leads', 'error');
+    } finally {
+      setReloading(false);
+    }
+  };
+
   const downloadFile = async (file: LeadFile) => {
     try {
       const { blob, filename } = await apiBlob(`/api/lead-files/${file.id}/file/`);
@@ -182,6 +223,9 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
           {stages.map((s) => <option key={s} value={s.toLowerCase()}>{s}</option>)}
         </select>
         <div className="ml-auto flex items-center gap-2">
+          {manage && (
+            <Button variant="outline" size="sm" onClick={openReload}>Reload leads</Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => showToast('Export is available when export_leads is granted', 'info')}>Export</Button>
           <Button variant="primary" size="sm" onClick={load}>Refresh</Button>
         </div>
@@ -364,6 +408,37 @@ export default function Leads({ showToast }: { showToast: (msg: string, type?: '
           </div>
         )}
       </div>
+      <Modal open={reloadOpen} onClose={() => setReloadOpen(false)} title="Reload leads" size="lg">
+        <p className="text-sm text-slate-600 mb-3">
+          {fileId
+            ? 'Choose the dispositions to call again from the open file. Call history stays.'
+            : 'Choose the dispositions to call again. Call history stays. Auto-dial will use these leads on the next pass.'}
+        </p>
+        <div className="flex items-center gap-3 mb-2">
+          <button type="button" className="text-xs font-medium text-[#4F46E5]" onClick={() => setPicked(reloadCodes.map((row) => row.code))}>Select all</button>
+          <button type="button" className="text-xs font-medium text-slate-500" onClick={() => setPicked([])}>Clear</button>
+        </div>
+        <div className="max-h-80 overflow-y-auto rounded-lg border border-[#E2E8F0] p-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {reloadCodes.map((row) => (
+            <label key={row.code} className="flex items-start gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                className="mt-1 accent-[#4F46E5]"
+                checked={picked.includes(row.code)}
+                onChange={() => setPicked((current) => current.includes(row.code) ? current.filter((code) => code !== row.code) : [...current, row.code])}
+              />
+              <span>
+                <span className="font-mono text-xs text-slate-800">{row.code}</span>
+                <span className="block text-xs text-slate-500">{row.label}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2 mt-4">
+          <Button variant="outline" onClick={() => setReloadOpen(false)}>Cancel</Button>
+          <Button variant="primary" loading={reloading} onClick={reloadLeads}>Reload selected</Button>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -107,7 +107,7 @@ def scoped_users(user):
         return qs.filter(pk=user.pk)
     role = role_of(user)
     if role == User.Role.AGENCY:
-        return qs.filter(organization=org)
+        return qs.filter(organization=org).exclude(Q(role=User.Role.SUPER_ADMIN) | Q(is_superuser=True))
     if role == User.Role.MANAGER:
         return qs.filter(Q(pk__in=descendant_ids(user)) | Q(pk=user.pk), organization=org)
     if role == User.Role.ADMIN:
@@ -165,44 +165,26 @@ def scoped_leads(user, qs):
 
 
 def scoped_calls(user, qs):
+    """Calls placed by this login or by people who report up to them."""
     if is_super_admin(user):
         return qs
-    org = agency_of(user)
-    if org:
-        qs = qs.filter(agent__organization=org).filter(Q(campaign__isnull=True) | Q(campaign__agency=org))
-    else:
-        return qs.filter(agent=user)
-    role = role_of(user)
-    if role == User.Role.AGENCY:
-        return qs
-    tree = descendant_ids(user)
-    if role == User.Role.MANAGER:
-        return qs.filter(Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__manager=user))
-    if role == User.Role.ADMIN:
-        return qs.filter(Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__admin=user))
-    return qs.filter(agent=user)
+    return qs.filter(agent_id__in=descendant_ids(user))
 
 
 def scoped_recordings(user, qs):
     if is_super_admin(user):
         return qs
-    org = agency_of(user)
-    if not org:
-        return qs.filter(agent=user)
-    qs = qs.filter(agent__organization=org).filter(Q(campaign__isnull=True) | Q(campaign__agency=org))
-    role = role_of(user)
-    if role == User.Role.AGENCY:
+    return qs.filter(agent_id__in=descendant_ids(user))
+
+
+def scoped_followups(user, qs):
+    """Follow-ups for this login or for people who report up to them, on leads they can see."""
+    from crm.models import Contact
+
+    if is_super_admin(user):
         return qs
-    tree = descendant_ids(user)
-    if role == User.Role.MANAGER:
-        return qs.filter(
-            Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__manager=user) | Q(campaign__assigned_users=user)
-        ).distinct()
-    if role == User.Role.ADMIN:
-        return qs.filter(
-            Q(agent_id__in=tree) | Q(agent=user) | Q(campaign__admin=user) | Q(campaign__assigned_users=user)
-        ).distinct()
-    return qs.filter(agent=user)
+    leads = scoped_leads(user, Contact.objects.all())
+    return qs.filter(agent_id__in=descendant_ids(user), contact__in=leads)
 
 
 def require_perm(user, code):

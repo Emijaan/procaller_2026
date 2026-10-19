@@ -5,7 +5,17 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.access import agency_of, has_perm, is_super_admin, require_perm, scoped_campaigns, scoped_leads, scoped_users
+from accounts.access import (
+    agency_of,
+    has_perm,
+    is_super_admin,
+    require_perm,
+    scoped_calls,
+    scoped_campaigns,
+    scoped_followups,
+    scoped_leads,
+    scoped_users,
+)
 from accounts.services import write_audit
 
 from .models import Contact, FollowUp, ImportJob
@@ -20,7 +30,7 @@ class ContactListView(APIView):
 
         from telephony.models import Call
 
-        latest_call = Call.objects.filter(contact_id=OuterRef("pk")).order_by("-id")
+        latest_call = scoped_calls(request.user, Call.objects.filter(contact_id=OuterRef("pk"))).order_by("-id")
         qs = scoped_leads(request.user, Contact.objects.select_related("owner", "campaign", "agency", "import_job")).annotate(
             latest_call_state=Subquery(latest_call.values("state")[:1]),
             latest_call_disposition=Subquery(latest_call.values("disposition")[:1]),
@@ -304,6 +314,38 @@ class LeadFileDownloadView(APIView):
         return FileResponse(job.source_file.open("rb"), as_attachment=True, filename=name, content_type=content_type)
 
 
+class LeadReloadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        require_perm(request.user, "edit_campaign")
+        from .queue import reload_disposition_choices
+
+        return Response({"dispositions": reload_disposition_choices()})
+
+    def post(self, request):
+        require_perm(request.user, "edit_campaign")
+        from .queue import reload_leads_for_dispositions
+
+        raw = request.data.get("dispositions") or request.data.get("codes") or []
+        if isinstance(raw, str):
+            raw = [part.strip() for part in raw.split(",") if part.strip()]
+        leads = None
+        job_id = request.data.get("import_job") or None
+        if job_id:
+            job = _scoped_import_jobs(request.user).filter(pk=job_id).first()
+            if not job:
+                return Response({"detail": "File not found"}, status=404)
+            from .queue import contacts_for_import_job
+
+            leads = contacts_for_import_job(job)
+        try:
+            result = reload_leads_for_dispositions(request.user, raw, leads=leads)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        return Response(result)
+
+
 class ReleaseLeadView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -312,3 +354,56 @@ class ReleaseLeadView(APIView):
 
         release_agent_reservations(request.user)
         return Response({"ok": True})
+
+
+def _followup_bucket(row, now):
+    if row.status == FollowUp.Status.DONE:
+        return "completed"
+    due = timezone.localtime(row.due_at)
+    current = timezone.localtime(now)
+    if due < current:
+        return "overdue"
+    if due.date() == current.date():
+        return "today"
+    return "upcoming"
+
+
+def _followup_row(row, now):
+    contact = row.contact
+    agent = row.agent
+    return {
+        "id": row.id,
+        "customer": contact.name if contact else "",
+        "phone": contact.phone if contact else "",
+        "agent": agent.display_name if agent else "",
+        "reason": row.reason,
+        "priority": row.priority or "Medium",
+        "due_at": row.due_at,
+        "bucket": _followup_bucket(row, now),
+        "status": row.status,
+    }
+
+
+class FollowUpListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        now = timezone.now()
+        qs = scoped_followups(
+            request.user,
+            FollowUp.objects.select_related("contact", "agent"),
+        ).order_by("due_at")
+        return Response([_followup_row(row, now) for row in qs[:300]])
+
+
+class FollowUpDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        row = scoped_followups(request.user, FollowUp.objects.select_related("contact", "agent")).filter(pk=pk).first()
+        if not row:
+            return Response({"detail": "Not found"}, status=404)
+        if request.data.get("status") == FollowUp.Status.DONE:
+            row.status = FollowUp.Status.DONE
+            row.save(update_fields=["status"])
+        return Response(_followup_row(row, timezone.now()))

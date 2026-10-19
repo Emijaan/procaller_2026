@@ -305,3 +305,175 @@ class TenantIsolationTests(TestCase):
         self.assertIn("a@test.com", emails)
         self.assertIn("b@test.com", emails)
         self.assertEqual(shared.agency_id, None)
+
+    def test_agency_created_on_the_team_page_does_not_see_the_platform_company(self):
+        platform = Organization.objects.create(name="Platform")
+        self.super.organization = platform
+        self.super.save(update_fields=["organization"])
+        User.objects.create_user(email="other@platform.com", password="x", role=User.Role.USER, organization=platform)
+        root = self._login("root@test.com")
+        missing = root.post(
+            "/api/staff/",
+            {
+                "email": "nolimits@test.com",
+                "password": "x",
+                "role": "agency",
+                "first_name": "No Limits",
+            },
+            format="json",
+        )
+        self.assertEqual(missing.status_code, 400)
+        created = root.post(
+            "/api/staff/",
+            {
+                "email": "mittal@test.com",
+                "password": "x",
+                "role": "agency",
+                "first_name": "Mittal Enterprises",
+                "organization": platform.id,
+                "max_managers": 1,
+                "max_admins": 2,
+                "max_users": 3,
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        org = created.data["organization"]
+        org_id = org["id"] if isinstance(org, dict) else org
+        self.assertNotEqual(org_id, platform.id)
+        self.assertEqual(org["name"], "Mittal Enterprises")
+        self.assertEqual(org["max_managers"], 1)
+        self.assertEqual(org["max_admins"], 2)
+        self.assertEqual(org["max_users"], 3)
+        client = self._login("mittal@test.com")
+        first_manager = client.post(
+            "/api/staff/",
+            {"email": "manager1@test.com", "password": "x", "role": "manager", "first_name": "One"},
+            format="json",
+        )
+        self.assertEqual(first_manager.status_code, 201, first_manager.data)
+        second_manager = client.post(
+            "/api/staff/",
+            {"email": "manager2@test.com", "password": "x", "role": "manager", "first_name": "Two"},
+            format="json",
+        )
+        self.assertEqual(second_manager.status_code, 400)
+        raised = root.patch(
+            f"/api/staff/{created.data['id']}/",
+            {"max_managers": 4, "max_users": 8},
+            format="json",
+        )
+        self.assertEqual(raised.status_code, 200, raised.data)
+        self.assertEqual(raised.data["organization"]["max_managers"], 4)
+        self.assertEqual(raised.data["organization"]["max_users"], 8)
+        self.assertEqual(raised.data["organization"]["max_admins"], 2)
+        emails = sorted(row["email"] for row in client.get("/api/staff/").data)
+        self.assertEqual(emails, ["manager1@test.com", "mittal@test.com"])
+
+    def test_call_list_stays_inside_the_reporting_family(self):
+        from telephony.models import Call
+
+        platform = Organization.objects.create(name="Platform Calls")
+        self.super.organization = platform
+        self.super.save(update_fields=["organization"])
+        outsider = User.objects.create_user(
+            email="outsider@platform.com", password="x", role=User.Role.USER, organization=platform
+        )
+        agency = User.objects.create_user(
+            email="family-agency@test.com", password="x", role=User.Role.AGENCY, organization=platform
+        )
+        child = User.objects.create_user(
+            email="family-user@test.com", password="x", role=User.Role.USER, organization=platform, reports_to=agency
+        )
+        Call.objects.create(agent=self.super, phone_number="9000000001", callerid_token="super-call")
+        Call.objects.create(agent=outsider, phone_number="9000000002", callerid_token="outsider-call")
+        Call.objects.create(agent=agency, phone_number="9000000003", callerid_token="agency-call")
+        Call.objects.create(agent=child, phone_number="9000000004", callerid_token="child-call")
+
+        agency_client = self._login("family-agency@test.com")
+        agency_phones = {row["phone_number"] for row in agency_client.get("/api/calls/").data}
+        self.assertEqual(agency_phones, {"9000000003", "9000000004"})
+
+        user_client = self._login("family-user@test.com")
+        user_phones = {row["phone_number"] for row in user_client.get("/api/calls/").data}
+        self.assertEqual(user_phones, {"9000000004"})
+
+        root = self._login("root@test.com")
+        root_phones = {row["phone_number"] for row in root.get("/api/calls/").data}
+        self.assertTrue({"9000000001", "9000000002", "9000000003", "9000000004"} <= root_phones)
+
+    def test_analytics_uses_only_the_reporting_family(self):
+        from django.utils import timezone
+
+        from crm.models import Contact
+        from telephony.models import Call
+
+        home = Organization.objects.create(name="Analytics Home")
+        other = Organization.objects.create(name="Analytics Other")
+        agency = User.objects.create_user(
+            email="analytics-agency@test.com", password="x", role=User.Role.AGENCY, organization=home
+        )
+        User.objects.create_user(
+            email="analytics-user@test.com", password="x", role=User.Role.USER, organization=home, reports_to=agency
+        )
+        outsider = User.objects.create_user(
+            email="analytics-outsider@test.com", password="x", role=User.Role.USER, organization=other
+        )
+        Contact.objects.create(name="Home Lead", phone="9111000001", agency=home)
+        Contact.objects.create(name="Other Lead", phone="9111000002", agency=other)
+        own = Call.objects.create(
+            agent=agency, phone_number="9111000001", callerid_token="analytics-own", disposition="CONNECTED"
+        )
+        Call.objects.filter(pk=own.pk).update(answered_at=timezone.now(), duration_seconds=40)
+        Call.objects.create(
+            agent=outsider, phone_number="9111000002", callerid_token="analytics-other", disposition="SWITCHED_OFF"
+        )
+
+        client = self._login("analytics-agency@test.com")
+        res = client.get("/api/analytics/?period=7d")
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data["totals"]["calls"], 1)
+        self.assertEqual(res.data["totals"]["connected"], 1)
+        self.assertEqual([row["name"] for row in res.data["outcomes"]], ["CONNECTED"])
+        self.assertEqual([row["name"] for row in res.data["agents"]], [agency.display_name])
+        funnel = {row["name"]: row["value"] for row in res.data["funnel"]}
+        self.assertEqual(funnel["Leads"], 1)
+        self.assertNotIn("Anjali", str(res.data))
+        self.assertNotIn("SWITCHED_OFF", str(res.data["outcomes"]))
+
+    def test_followups_stay_inside_the_reporting_family(self):
+        from django.utils import timezone
+
+        from crm.models import Contact, FollowUp
+
+        home = Organization.objects.create(name="Follow Home")
+        other = Organization.objects.create(name="Follow Other")
+        agency = User.objects.create_user(
+            email="follow-agency@test.com", password="x", role=User.Role.AGENCY, organization=home
+        )
+        child = User.objects.create_user(
+            email="follow-user@test.com", password="x", role=User.Role.USER, organization=home, reports_to=agency
+        )
+        outsider = User.objects.create_user(
+            email="follow-outsider@test.com", password="x", role=User.Role.USER, organization=other
+        )
+        home_lead = Contact.objects.create(name="Home Person", phone="9222000001", agency=home)
+        other_lead = Contact.objects.create(name="Other Person", phone="9222000002", agency=other)
+        own = FollowUp.objects.create(
+            contact=home_lead, agent=child, reason="Call back", due_at=timezone.now(), priority="High"
+        )
+        foreign = FollowUp.objects.create(
+            contact=other_lead, agent=outsider, reason="Not ours", due_at=timezone.now()
+        )
+
+        client = self._login("follow-agency@test.com")
+        listed = client.get("/api/followups/")
+        self.assertEqual(listed.status_code, 200, listed.data)
+        self.assertEqual([row["customer"] for row in listed.data], ["Home Person"])
+        hidden = client.patch(f"/api/followups/{foreign.id}/", {"status": "done"}, format="json")
+        self.assertEqual(hidden.status_code, 404)
+        done = client.patch(f"/api/followups/{own.id}/", {"status": "done"}, format="json")
+        self.assertEqual(done.status_code, 200, done.data)
+        self.assertEqual(done.data["bucket"], "completed")
+        foreign.refresh_from_db()
+        self.assertNotEqual(foreign.status, FollowUp.Status.DONE)
